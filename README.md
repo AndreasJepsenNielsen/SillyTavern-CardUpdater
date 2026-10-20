@@ -26,8 +26,15 @@ Pick one under **Connection source**:
 - **Connection Profile**: any profile from the Connection Manager.
 - **The chat's connection**: the model the chat uses.
 
-None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high:
-if the model runs out while thinking, the window says so instead of failing silently.
+None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high.
+
+**Thinking** (direct connection, sent as OpenRouter's reasoning setting): off by default while reading the story,
+since that step only lists events, and the model's default while updating the card. Temperature defaults to 0.8;
+GLM's reasoning models get stuck in loops more easily at low temperatures.
+
+**Loop guard**: if the model's thinking or reply starts repeating itself, the request is stopped right away and
+tried once more. Running out of tokens is retried once too. If it still fails, the window shows the error and
+the end of the model's thinking.
 
 ## Using it
 

@@ -20,17 +20,47 @@ export function isLocalUrl(url) {
     return /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?/i.test(String(url));
 }
 
+/** An error with the end of the model's thinking attached, so the window can show what it was doing. */
+export class ModelError extends Error {
+    constructor(message, { reasoningTail = '', retryable = false } = {}) {
+        super(message);
+        this.reasoningTail = reasoningTail;
+        this.retryable = retryable;
+    }
+}
+
 /**
- * Reads a streamed (SSE) chat completion.
- * @returns {Promise<{content: string, reasoningChars: number, finishReason: string}>} the reply without reasoning
+ * True when the end of the text is repeating itself: its last stretch already appears at least three times
+ * in the stretch before it. A model caught in a loop writes the same paragraph over and over.
+ */
+export function isLooping(text, { tail = 300, window = 40000, repeats = 3 } = {}) {
+    const t = String(text ?? '');
+    if (t.length < tail * (repeats + 2)) return false;
+    const end = t.slice(-tail);
+    const before = t.slice(Math.max(0, t.length - window), t.length - tail);
+    let count = 0;
+    let at = before.indexOf(end);
+    while (at !== -1) {
+        count++;
+        if (count >= repeats) return true;
+        at = before.indexOf(end, at + 1);
+    }
+    return false;
+}
+
+/**
+ * Reads a streamed (SSE) chat completion. Stops early when the thinking or the reply starts repeating itself.
+ * @returns {Promise<{content: string, reasoningChars: number, reasoningTail: string, finishReason: string}>} the reply without reasoning
  */
 export async function readStream(response, onProgress) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
+    let reasoning = '';
     let reasoningChars = 0;
     let finishReason = '';
     let buffer = '';
+    let nextCheck = 6000;
     try {
         for (;;) {
             const { done, value } = await reader.read();
@@ -51,21 +81,44 @@ export async function readStream(response, onProgress) {
                     const delta = choice.delta || {};
                     if (delta.content) content += delta.content;
                     const r = delta.reasoning || delta.reasoning_content;
-                    if (r) reasoningChars += String(r).length;
+                    if (r) {
+                        reasoningChars += String(r).length;
+                        reasoning = (reasoning + String(r)).slice(-60000);
+                    }
                     if (onProgress) onProgress({ contentChars: content.length, reasoningChars });
                 } catch (err) {
                     if (err instanceof SyntaxError) continue;
                     throw err;
                 }
+                if (reasoningChars + content.length >= nextCheck) {
+                    nextCheck += 3000;
+                    if (isLooping(reasoning) || isLooping(content)) {
+                        reader.cancel().catch(() => {});
+                        throw new ModelError(`The model got stuck repeating itself after ${reasoningChars.toLocaleString()} characters of thinking, so it was stopped.`, { reasoningTail: reasoning.slice(-3000), retryable: true });
+                    }
+                }
             }
         }
     } finally {
-        reader.releaseLock();
+        try {
+            reader.releaseLock();
+        } catch { /* already cancelled */ }
     }
-    return { content, reasoningChars, finishReason };
+    return { content, reasoningChars, reasoningTail: reasoning.slice(-3000), finishReason };
 }
 
-async function sendDirect(s, system, user, { signal, onProgress, maxTokens } = {}) {
+/** The OpenRouter `reasoning` field for a thinking setting, or null to leave it to the model. */
+export function reasoningField(level) {
+    switch (level) {
+        case 'off': return { enabled: false };
+        case 'low':
+        case 'medium':
+        case 'high': return { effort: level };
+        default: return null;
+    }
+}
+
+async function sendDirect(s, system, user, { signal, onProgress, maxTokens, reasoning } = {}) {
     const endpoint = completionsUrl(s.apiUrl);
     if (!endpoint) throw new Error('Set the endpoint URL in Card Updater settings.');
     if (!s.apiModel) throw new Error('Set the model name in Card Updater settings.');
@@ -74,9 +127,11 @@ async function sendDirect(s, system, user, { signal, onProgress, maxTokens } = {
     const body = {
         model: s.apiModel,
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-        temperature: Number.isFinite(Number(s.temperature)) ? Number(s.temperature) : 0.5,
+        temperature: Number.isFinite(Number(s.temperature)) ? Number(s.temperature) : 0.8,
         stream: true,
     };
+    const thinking = reasoningField(reasoning);
+    if (thinking) body.reasoning = thinking;
     const limit = Number(maxTokens ?? s.maxTokens) || 0;
     if (limit > 0) body.max_tokens = limit;
 
@@ -97,15 +152,15 @@ async function sendDirect(s, system, user, { signal, onProgress, maxTokens } = {
         if (response.status === 401) throw new Error('The endpoint answered 401 Unauthorized. Check the API key.');
         throw new Error(`The endpoint answered ${response.status}: ${text.slice(0, 300)}`);
     }
-    const { content, reasoningChars, finishReason } = await readStream(response, onProgress);
+    const { content, reasoningChars, reasoningTail, finishReason } = await readStream(response, onProgress);
     if (!content.trim()) {
         if (finishReason === 'length') {
-            throw new Error(`The model used all ${limit || 'its'} max tokens thinking (${reasoningChars.toLocaleString()} characters) before writing anything. Raise Max tokens, or use a model that thinks less.`);
+            throw new ModelError(`The model used all ${limit || 'its'} max tokens thinking (${reasoningChars.toLocaleString()} characters) before writing anything.`, { reasoningTail, retryable: true });
         }
-        throw new Error(`The model sent back an empty reply${reasoningChars ? ` after ${reasoningChars.toLocaleString()} characters of thinking` : ''}.`);
+        throw new ModelError(`The model sent back an empty reply${reasoningChars ? ` after ${reasoningChars.toLocaleString()} characters of thinking` : ''}.`, { reasoningTail, retryable: true });
     }
     if (finishReason === 'length') {
-        throw new Error('The reply was cut off at Max tokens before it was finished. Raise Max tokens.');
+        throw new ModelError('The reply was cut off at Max tokens before it was finished.', { reasoningTail, retryable: true });
     }
     return content;
 }
@@ -150,7 +205,7 @@ export async function send(s, system, user, opts = {}) {
 }
 
 export async function testConnection(s) {
-    const reply = await send(s, 'You are a connection test.', 'Reply with exactly: CONNECTION_OK', { maxTokens: s.source === 'openai' ? 2000 : 200 });
+    const reply = await send(s, 'You are a connection test.', 'Reply with exactly: CONNECTION_OK', { maxTokens: s.source === 'openai' ? 2000 : 200, reasoning: 'off' });
     return reply.trim().slice(0, 100);
 }
 

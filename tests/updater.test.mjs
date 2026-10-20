@@ -256,3 +256,43 @@ test('connection: a reply that ran out of tokens while thinking says so', async 
         globalThis.fetch = realFetch;
     }
 });
+
+test('loop guard: repeating thinking is caught, normal thinking is not', async () => {
+    const { isLooping, reasoningField } = await import('../connection.js');
+    const para = 'Wait, does Jules know about this? She was at the gallery, so she saw it. Let me check the next line again. ';
+    assert.equal(isLooping(para.repeat(40)), true);
+    const normal = Array.from({ length: 200 }, (_, i) => `Line ${i}: event number ${i * 7} happens at the party with person ${i % 13}.`).join(' ');
+    assert.equal(isLooping(normal), false);
+    assert.equal(isLooping('short'), false);
+    assert.deepEqual(reasoningField('off'), { enabled: false });
+    assert.deepEqual(reasoningField('low'), { effort: 'low' });
+    assert.equal(reasoningField('default'), null);
+});
+
+test('connection: a looping stream is stopped early with the end of the thinking attached', async () => {
+    const { send, ModelError } = await import('../connection.js');
+    const enc = new TextEncoder();
+    const para = 'Hmm, should this line go in? Let me reconsider the whole part from the top once more. ';
+    let sentChunks = 0;
+    const body = new ReadableStream({
+        pull(c) {
+            if (sentChunks++ > 2000) return c.close();
+            c.enqueue(enc.encode('data: ' + JSON.stringify({ choices: [{ delta: { reasoning: para } }] }) + '\n'));
+        },
+    });
+    const realFetch = globalThis.fetch;
+    let sent = null;
+    try {
+        globalThis.fetch = async (url, init) => { sent = JSON.parse(init.body); return { ok: true, body }; };
+        const s = { source: 'openai', apiUrl: 'https://example.test/api/v1', apiModel: 'm', maxTokens: 60000, temperature: 0.8 };
+        const err = await send(s, 'sys', 'user', { reasoning: 'off' }).catch(e => e);
+        assert.ok(err instanceof ModelError && err.retryable, String(err));
+        assert.match(err.message, /stuck repeating itself/);
+        assert.ok(err.reasoningTail.includes('reconsider the whole part'));
+        assert.ok(sentChunks < 400, `stopped early (${sentChunks} chunks)`);
+        assert.deepEqual(sent.reasoning, { enabled: false });
+        assert.equal(sent.temperature, 0.8);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});

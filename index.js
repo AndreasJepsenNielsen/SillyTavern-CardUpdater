@@ -8,7 +8,7 @@ import {
     chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
     matchRange, lineDiff, checkUpdate,
 } from './updater.js';
-import { send, testConnection, summaryceptionConnection } from './connection.js';
+import { send, testConnection, summaryceptionConnection, ModelError } from './connection.js';
 
 const MODULE = 'cardUpdater';
 const LOG = '[Card Updater]';
@@ -22,7 +22,9 @@ const DEFAULTS = Object.freeze({
     apiKey: '',
     apiModel: '',
     maxTokens: 32000,
-    temperature: 0.5,
+    temperature: 0.8,
+    logThinking: 'off', // reading the story into the log is listing, not reasoning
+    updateThinking: 'default',
     profileId: '',
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
     sections: Object.fromEntries(UPDATABLE.map(([k]) => [k, true])),
@@ -37,10 +39,17 @@ function settings() {
     const all = ctx().extensionSettings;
     if (!all[MODULE] || typeof all[MODULE] !== 'object') all[MODULE] = {};
     const s = all[MODULE];
+    const firstLoad = !Object.keys(s).length;
     for (const [k, v] of Object.entries(DEFAULTS)) {
         if (s[k] === undefined) s[k] = typeof v === 'object' ? structuredClone(v) : v;
     }
     for (const [k] of UPDATABLE) if (s.sections[k] === undefined) s.sections[k] = true;
+    if (firstLoad) s.settingsVersion = 2;
+    if ((s.settingsVersion || 1) < 2) {
+        // 0.5 was the first default; GLM's reasoning models loop more easily that low.
+        if (s.temperature === 0.5) s.temperature = 0.8;
+        s.settingsVersion = 2;
+    }
     return s;
 }
 
@@ -184,6 +193,24 @@ function planText(card, plan) {
     if (plan.pending) parts.push(`${plan.pending} logged line${plan.pending === 1 ? '' : 's'} not in the card yet`);
     if (plan.log) parts.push(`log has ${plan.log.lines.length} line${plan.log.lines.length === 1 ? '' : 's'}`);
     return `${card.title}: ${parts.join(' · ')}`;
+}
+
+/** Sends once, and once more if the model got stuck or ran out of tokens. */
+async function sendWithRetry(s, system, user, opts) {
+    try {
+        return await send(s, system, user, opts);
+    } catch (err) {
+        if (opts.signal?.aborted || !(err instanceof ModelError) || !err.retryable) throw err;
+        console.warn(LOG, 'retrying after:', err.message);
+        if (opts.onRetry) opts.onRetry(err);
+        return await send(s, system, user, opts);
+    }
+}
+
+function errorHtml(prefix, err, signal) {
+    if (signal?.aborted) return '<div class="cu-warn">Cancelled.</div>';
+    const tail = err?.reasoningTail ? `<details><summary>End of the model's thinking</summary><pre class="cu-pre">${esc(err.reasoningTail)}</pre></details>` : '';
+    return `<div class="cu-warn">${esc(prefix)}: ${esc(err?.message || err)}${err instanceof ModelError && err.retryable ? ' (tried twice)' : ''}</div>${tail}`;
 }
 
 /** Runs async tasks a few at a time; results come back in order. */
@@ -374,7 +401,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
         const tasks = plan.chunks.map(chunk => async () => {
             const firstMsg = chunk.items.find(x => x.kind === 'message' || x.from >= 0);
             const lastDate = firstMsg && firstMsg.from > 0 ? storyDateFrom(c.chat, firstMsg.from - 1) : '';
-            const reply = await send(s, sys, logUserPrompt({ name: card.title, names: card.names, text: chunk.text, lastDate }), { signal });
+            const reply = await sendWithRetry(s, sys, logUserPrompt({ name: card.title, names: card.names, text: chunk.text, lastDate }), { signal, reasoning: s.logThinking });
             done++;
             return parseLog(reply);
         });
@@ -383,8 +410,8 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
             parts = await runPool(tasks, PARALLEL);
         } catch (err) {
             clearInterval(tick);
-            const msg = signal.aborted ? 'Cancelled.' : `Reading the story failed: ${err?.message || err}`;
-            block.html(`${cardHead(card, elapsed())}<div class="cu-warn">${esc(msg)} Nothing was saved to the log, so the next run starts from the same place.</div>`);
+            console.error(LOG, err);
+            block.html(`${cardHead(card, elapsed())}${errorHtml('Reading the story failed', err, signal)}<div class="cu-muted">Nothing was saved to the log, so the next run starts from the same place.</div>`);
             return;
         }
         clearInterval(tick);
@@ -409,18 +436,19 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
     status.text(`${card.title} (${counter}): updating the card from ${newLines.length} log lines…`);
     let reply;
     try {
-        reply = await send(s, systemPrompt(c.name1), userPrompt({
+        reply = await sendWithRetry(s, systemPrompt(c.name1), userPrompt({
             card: content, title: card.title, sections: ranges.map(r => r.title), log: newLines,
             trackers: trackerLines(c.chat, card.names), storyDate: storyDateFrom(c.chat),
         }), {
             signal,
+            reasoning: s.updateThinking,
             onProgress: ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): updating the card… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
+            onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
         });
     } catch (err) {
         clearInterval(tick2);
         console.error(LOG, err);
-        const msg = signal.aborted ? 'Cancelled.' : `Updating the card failed: ${err?.message || err}`;
-        block.html(`${cardHead(card, elapsed())}<div class="cu-warn">${esc(msg)} The log is saved, so the next run goes straight to this step.</div>${logDetails(newLines)}`);
+        block.html(`${cardHead(card, elapsed())}${errorHtml('Updating the card failed', err, signal)}<div class="cu-muted">The log is saved, so the next run goes straight to this step.</div>${logDetails(newLines)}`);
         return;
     }
     clearInterval(tick2);
@@ -580,6 +608,11 @@ async function openVersions() {
 
 // ---------------------------------------------------------------- settings panel
 
+function thinkingOptions() {
+    return [['default', 'Model default'], ['off', 'Off'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']]
+        .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+}
+
 function settingsHtml() {
     return `
 <div id="card_updater_settings" class="card-updater">
@@ -609,6 +642,12 @@ function settingsHtml() {
         <div class="cu-grid">
           <label for="cu_max">Max tokens</label><input id="cu_max" class="text_pole" type="number" min="0" step="1000">
           <label for="cu_temp">Temperature</label><input id="cu_temp" class="text_pole" type="number" min="0" max="2" step="0.05">
+        </div>
+        <div class="cu-grid">
+          <label for="cu_think_log" title="Reading the story is listing events, so thinking can stay off. Sent to OpenRouter as its reasoning setting.">Thinking while reading the story</label>
+          <select id="cu_think_log" class="text_pole">${thinkingOptions()}</select>
+          <label for="cu_think_update" title="Sent to OpenRouter as its reasoning setting.">Thinking while updating the card</label>
+          <select id="cu_think_update" class="text_pole">${thinkingOptions()}</select>
         </div>
         <div class="cu-row cu-buttons">
           <div id="cu_copy_sc" class="menu_button">Copy from Summaryception</div>
@@ -671,6 +710,8 @@ function bindSettings() {
     $('#cu_key').on('input', function () { s.apiKey = this.value.trim(); save(); });
     $('#cu_model').on('input', function () { s.apiModel = this.value.trim(); save(); });
     $('#cu_max').on('input', function () { s.maxTokens = Math.max(0, parseInt(this.value, 10) || 0); save(); });
+    $('#cu_think_log').val(s.logThinking).on('change', function () { s.logThinking = this.value; save(); });
+    $('#cu_think_update').val(s.updateThinking).on('change', function () { s.updateThinking = this.value; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
     $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });
 
