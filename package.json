@@ -1,0 +1,9 @@
+{
+    "name": "sillytavern-cardupdater",
+    "private": true,
+    "type": "module",
+    "description": "Tests for the Card Updater SillyTavern extension. SillyTavern itself does not use this file.",
+    "scripts": {
+        "test": "node --test tests/updater.test.mjs"
+    }
+}

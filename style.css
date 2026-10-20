@@ -1,0 +1,161 @@
+.card-updater .cu-grid,
+.card-updater-window .cu-grid {
+    display: grid;
+    grid-template-columns: 1fr 7em;
+    gap: 4px 8px;
+    align-items: center;
+    margin: 6px 0;
+}
+
+.card-updater .cu-row,
+.card-updater-window .cu-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 6px 0;
+}
+
+.card-updater-window .cu-row > label {
+    min-width: 6em;
+}
+
+.card-updater-window .cu-row > select {
+    flex: 1;
+}
+
+.card-updater .cu-muted,
+.card-updater-window .cu-muted {
+    opacity: 0.7;
+    font-size: 0.9em;
+}
+
+.card-updater-window {
+    text-align: left;
+}
+
+.card-updater-window .cu-cards {
+    max-height: 32vh;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 4px 8px;
+}
+
+.card-updater-window .cu-group {
+    font-weight: bold;
+    margin: 8px 0 2px;
+}
+
+.card-updater-window .cu-card {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+}
+
+.card-updater-window .cu-label {
+    margin-top: 10px;
+    font-weight: bold;
+}
+
+.card-updater-window .cu-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 14px;
+}
+
+.card-updater-window .cu-status {
+    margin: 6px 0;
+    min-height: 1.2em;
+}
+
+.card-updater-window .cu-result {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 10px 0;
+}
+
+.card-updater-window .cu-card-title {
+    font-weight: bold;
+    font-size: 1.1em;
+    margin-bottom: 6px;
+}
+
+.card-updater-window .cu-item {
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    padding: 8px 0;
+}
+
+.card-updater-window .cu-diff {
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 40vh;
+    overflow-y: auto;
+    padding: 6px;
+    margin: 6px 0;
+    border-radius: 4px;
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.card-updater-window .cu-add {
+    background: rgba(60, 160, 80, 0.28);
+}
+
+.card-updater-window .cu-del {
+    background: rgba(200, 60, 60, 0.25);
+    text-decoration: line-through;
+    opacity: 0.85;
+}
+
+.card-updater-window .cu-same {
+    opacity: 0.55;
+}
+
+.card-updater-window .cu-edit {
+    width: 100%;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.85em;
+}
+
+.card-updater .cu-warn,
+.card-updater-window .cu-warn {
+    color: var(--warning, #e0a030);
+    font-size: 0.9em;
+    margin: 3px 0;
+}
+
+.card-updater-window .cu-ok {
+    color: var(--active, #4caf50);
+    margin: 6px 0;
+}
+
+.card-updater-window .cu-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 40vh;
+    overflow-y: auto;
+    font-size: 0.85em;
+    padding: 6px;
+    border-radius: 4px;
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+}
+
+.card-updater-window .cu-version {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: 4px 0 4px 10px;
+}
+
+.card-updater-window .cu-version details {
+    flex-basis: 100%;
+}
+
+.card-updater-window .menu_button.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
