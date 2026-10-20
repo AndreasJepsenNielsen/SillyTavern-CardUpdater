@@ -1,6 +1,6 @@
 // Card Updater: the parts that don't touch SillyTavern (sections, prompt, reply parsing, diffs, checks).
 
-import { headingInfo, classifyHeading, cleanProse, stateBlock } from './cardparse.js';
+import { headingInfo, classifyHeading, cleanProse, stateBlock, physicsText, mentionsAny } from './cardparse.js';
 
 /** Sections the updater may change, in the order they're offered. */
 export const UPDATABLE = [
@@ -108,18 +108,18 @@ export function canonPointBody(body, storyDate) {
     return `${m[1]}, updated with the story up to ${date}.${b.slice(m[0].length - m[3].length)}`;
 }
 
-// ---------------------------------------------------------------- the chat
+// ---------------------------------------------------------------- the story
 
 /** The newest story date from a header like `[ 🕰️ 04:35 PM | 🗓️ Day 1 - Saturday 17 May | 📍 ... ]`. */
-export function storyDateFrom(chat) {
-    for (let i = (chat?.length || 0) - 1; i >= 0; i--) {
+export function storyDateFrom(chat, upTo = Infinity) {
+    for (let i = Math.min((chat?.length || 0) - 1, upTo); i >= 0; i--) {
         const m = String(chat[i]?.mes ?? '').match(/🗓️\s*([^|\]\n]+)/u);
         if (m) return m[1].trim();
     }
     return '';
 }
 
-function tagless(text) {
+export function tagless(text) {
     return String(text ?? '')
         .replace(/<summary>([\s\S]*?)<\/summary>/gi, '\n## $1\n')
         .replace(/<br\s*\/?>/gi, '\n')
@@ -130,68 +130,178 @@ function tagless(text) {
 }
 
 /**
- * What the model reads: the Summaryception summary, the chat it hasn't summarised yet, and the latest state block.
+ * The story as an ordered list of pieces: Summaryception snippets where the chat has been summarised, raw
+ * messages where it hasn't. With `since`, only what comes after that message index (raw messages are used for
+ * anything a still-dated snippet doesn't cover, even when Summaryception has hidden them).
  * @param {object[]} chat SillyTavern chat messages
  * @param {object} store chatMetadata.summaryception, if any
- * @param {{userName: string, fallbackMessages: number, maxChars: number}} opts
+ * @param {{userName?: string, since?: number|null, firstRunMessages?: number}} opts
+ * @returns {{items: {kind: 'summary'|'message', from: number, to: number, text: string, isUser?: boolean, presence?: string}[], end: number}}
  */
-export function gatherStory(chat, store, { userName = 'User', fallbackMessages = 60, maxChars = 120000 } = {}) {
+export function storyItems(chat, store, { userName = 'User', since = null, firstRunMessages = 0 } = {}) {
     const msgs = Array.isArray(chat) ? chat : [];
+    const end = msgs.length - 1;
     const layers = Array.isArray(store?.layers) ? store.layers : [];
-    const snippets = [];
-    for (let i = layers.length - 1; i >= 0; i--) {
-        for (const sn of Array.isArray(layers[i]) ? layers[i] : []) if (sn?.text) snippets.push(String(sn.text).trim());
-    }
-    const summary = snippets.join('\n\n');
-    const hasSummary = snippets.length > 0;
-    const from = hasSummary && Number.isInteger(store?.summarizedUpTo) ? store.summarizedUpTo + 1 : Math.max(0, msgs.length - fallbackMessages);
-
-    const recent = [];
-    for (let i = from; i < msgs.length; i++) {
+    const layer0 = (Array.isArray(layers[0]) ? layers[0] : []).filter(sn => sn?.text && Array.isArray(sn.turnRange));
+    const items = [];
+    const msgItem = (i) => {
         const m = msgs[i];
-        if (!m || m.is_system || m?.extra?.sc_ghosted) continue;
+        if (!m || (m.is_system && !m?.extra?.sc_ghosted)) return null;
         const text = tagless(cleanProse(m.mes));
-        if (!text) continue;
+        if (!text) return null;
         const who = m.is_user ? userName : (m.name || 'Narrator');
-        recent.push(`[#${i}] ${who}: ${text}`);
-    }
-    let recentText = '';
-    for (let i = recent.length - 1; i >= 0; i--) {
-        const next = `${recent[i]}\n\n${recentText}`;
-        if (next.length > maxChars) break;
-        recentText = next;
-    }
+        return { kind: 'message', from: i, to: i, text: `[#${i}] ${who}: ${text}`, isUser: !!m.is_user, presence: physicsText(stateBlock(m.mes)) };
+    };
 
-    let state = '';
-    for (let i = msgs.length - 1; i >= 0; i--) {
-        const b = stateBlock(msgs[i]?.mes);
-        if (b) {
-            state = tagless(b);
-            break;
+    const firstRun = since === null || since === undefined;
+    if (firstRun) {
+        // Everything: the whole summary, oldest layer first, then the chat after it.
+        const hasSummary = layers.some(l => Array.isArray(l) && l.some(sn => sn?.text));
+        if (hasSummary) {
+            for (let li = layers.length - 1; li >= 0; li--) {
+                for (const sn of Array.isArray(layers[li]) ? layers[li] : []) {
+                    if (sn?.text) items.push({ kind: 'summary', from: sn.turnRange?.[0] ?? -1, to: sn.turnRange?.[1] ?? -1, text: String(sn.text).trim() });
+                }
+            }
+        }
+        const from = hasSummary
+            ? (Number.isInteger(store?.summarizedUpTo) ? store.summarizedUpTo + 1 : 0)
+            : (firstRunMessages > 0 ? Math.max(0, msgs.length - firstRunMessages) : 0);
+        for (let i = from; i <= end; i++) {
+            const it = msgItem(i);
+            if (it) items.push(it);
+        }
+    } else {
+        // Only what comes after `since`: a dated summary snippet where one starts after it, the raw message otherwise.
+        let i = since + 1;
+        while (i <= end) {
+            const sn = layer0.find(x => x.turnRange[0] === i);
+            if (sn && sn.turnRange[1] >= i) {
+                items.push({ kind: 'summary', from: sn.turnRange[0], to: sn.turnRange[1], text: String(sn.text).trim() });
+                i = sn.turnRange[1] + 1;
+                continue;
+            }
+            const it = msgItem(i);
+            if (it) items.push(it);
+            i++;
         }
     }
-    return { summary, hasSummary, recent: recentText.trim(), state, storyDate: storyDateFrom(msgs), fromIndex: from };
+    return { items, end };
 }
 
-// ---------------------------------------------------------------- the prompt
+/**
+ * Keeps the pieces that involve the character: summary snippets and messages that name them (in the text or in
+ * the Physics row of that message's state block), and the player's messages right before or after a kept reply,
+ * since those are their actions in the same scene.
+ */
+export function filterForCharacter(items, names) {
+    const keep = items.map(it => mentionsAny(it.text, names) || (it.presence ? mentionsAny(it.presence, names) : false));
+    items.forEach((it, k) => {
+        if (keep[k] || it.kind !== 'message' || !it.isUser) return;
+        const prev = items[k - 1];
+        const next = items[k + 1];
+        if ((prev && prev.kind === 'message' && !prev.isUser && keep[k - 1]) || (next && next.kind === 'message' && !next.isUser && keep[k + 1])) keep[k] = true;
+    });
+    return items.filter((_, k) => keep[k]);
+}
+
+/** Splits pieces into chunks of about maxChars. */
+export function chunkItems(items, maxChars = 24000) {
+    const chunks = [];
+    let cur = [];
+    let size = 0;
+    for (const it of items) {
+        if (cur.length && size + it.text.length > maxChars) {
+            chunks.push(cur);
+            cur = [];
+            size = 0;
+        }
+        cur.push(it);
+        size += it.text.length + 2;
+    }
+    if (cur.length) chunks.push(cur);
+    return chunks.map(c => ({ items: c, text: c.map(x => x.text).join('\n\n'), to: Math.max(-1, ...c.map(x => x.to)) }));
+}
+
+/** Rows of the latest state block that name the character (their notebook entries, bond, agenda, thoughts). */
+export function trackerLines(chat, names) {
+    for (let i = (chat?.length || 0) - 1; i >= 0; i--) {
+        const b = stateBlock(chat[i]?.mes);
+        if (!b) continue;
+        const out = [];
+        let section = '';
+        for (const line of tagless(b).split('\n')) {
+            const t = line.trim();
+            if (!t) continue;
+            if (t.startsWith('## ')) {
+                section = t.slice(3).trim();
+                continue;
+            }
+            if (mentionsAny(t, names)) out.push(section ? `${section}: ${t}` : t);
+        }
+        return out.join('\n');
+    }
+    return '';
+}
+
+// ---------------------------------------------------------------- step 1: the character's log
+
+export function logSystemPrompt(name, userName) {
+    const u = userName || 'the player character';
+    return `You keep a dated log of what happens to one character in a long roleplay, so their character card can be updated later. You read one part of the story and list what matters to ${name}.
+
+LIST ONLY
+- What ${name} did, said, saw or heard, and who was there.
+- What ${name} was told or found out, and who told them.
+- Lasting changes for ${name}: moving, a new job, a relationship starting, ending or changing, a secret coming out or being kept, an injury that lasts, a change in how they look, a goal reached or dropped, someone new coming into their life.
+- Everything between ${name} and ${u}.
+
+LEAVE OUT
+- Anything ${name} did not see, hear or get told. Other characters' scenes without ${name} are not part of ${name}'s log.
+- Passing moods, small talk and routine that changes nothing.
+
+FORMAT
+One line per event, starting with "- ", oldest first:
+- [story date as the story writes it, or "undated"]: what happened. Present: who was there.
+Plain words, events not interpretation. Say who said what when it matters. Keep each line short.
+If nothing in this part involves ${name}, reply with exactly: NONE`;
+}
+
+export function logUserPrompt({ name, names, text, lastDate }) {
+    return `CHARACTER: ${name} (also written as: ${names.join(', ')})
+${lastDate ? `The story date before this part: ${lastDate}\n` : ''}
+<story_part>
+${text}
+</story_part>
+
+Write ${name}'s log lines for this part, or NONE.`;
+}
+
+/** Log lines from a step-1 reply. */
+export function parseLog(reply) {
+    const text = String(reply ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+    if (/^NONE\.?$/i.test(text)) return [];
+    return text.split('\n').map(l => l.trim()).filter(l => /^[-*•]\s+\S/.test(l)).map(l => `- ${l.replace(/^[-*•]\s+/, '')}`);
+}
+
+// ---------------------------------------------------------------- step 2: the card update
 
 export function systemPrompt(userName) {
     const u = userName || 'the player character';
-    return `You update one character card for a long-running roleplay so it matches what has happened in the story. The roleplay model reads this card on every turn and treats it as the truth about the character. Only change what the story has actually changed.
+    return `You update one character card for a long-running roleplay so it matches what has happened in the story. The roleplay model reads this card on every turn and treats it as the truth about the character. You get the card and a dated log of what happened to the character since the card was last updated. The log already holds only what the character did, saw or was told. Only change what the log actually changes.
 
 WHAT TO CHANGE
 - Only what will still be true weeks of story time from now: who they are with and on what terms, where they live and work, what they now know, secrets that came out, goals reached or dropped, people who came into or left their life, lasting changes to how they look.
 - Never write a passing state into the card: mood, where they are right now, what they are doing today, injuries that heal within days, plans for the day. The game tracks those itself.
-- PERSONALITY changes only when the story shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. When in doubt, leave PERSONALITY alone. If you do change it, change only the affected lines and say in the reason which events show it.
-- The card holds only what THIS character knows. They know an event only if they were there, saw it, or were told about it, and then say who told them. The summary and chat show many things this character never saw: leave those out. This applies to ${u} too: what ${u} did out of this character's sight is not theirs to know.
+- PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. When in doubt, leave PERSONALITY alone. If you do change it, change only the affected lines and say in the reason which events show it.
 - Everything between this character and ${u} goes in their entry for ${u} under RELATIONSHIPS (Wants, Hides, Speech, Shared history), not in HISTORY or KNOWLEDGE. If that entry says they have not met ${u} and they now have, rewrite it as an entry for someone they know: Wants, Hides, a Speech line that says what they do when they talk to ${u} now (in front of whom, how close they stand, what they say first, what they do when they get nothing back), and Shared history.
 
 HOW TO WRITE IT
 - Keep the card's own format exactly: the same headings, bullet style, field labels (Wants:, Hides:, Speech:, Shared history:, Now:) and line layout. Keep every line you are not changing exactly as it is, in its place.
-- HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Each new line is what happened, when, who was there and what was said or done. Write events, not what they meant. Add only events that matter to this character, not every scene.
+- HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Each new line is what happened, when, who was there and what was said or done. Write events, not what they meant. Add only events that matter to this character, not every log line.
 - KNOWLEDGE uses: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation." Only add what they learned in the story.
-- RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's first line says what the character does now ("Now: ..."). Add an entry for someone new only if they are now a lasting part of this character's life. An entry holds only what this character knows.
-- Dates: write the story's named day and date the way the chat headers write them (for example "Day 3 - Monday 14 October"). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead ("clean since Day 3 - Monday 14 October"). Spoken lines in quotes keep their own words.
+- RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's first line says what the character does now ("Now: ..."). Add an entry for someone new only if they are now a lasting part of this character's life.
+- Dates: write the story's named day and date the way the log writes them (for example "Day 3 - Monday 14 October"). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead ("clean since Day 3 - Monday 14 October"). Spoken lines in quotes keep their own words.
 - Keep the card's prose flat and plain, like the rest of the card: facts, behaviour, things said. No flourishes, no summing up, no interpretation.
 - Write what the character does, never what they don't do.
 
@@ -199,23 +309,22 @@ WHAT TO RETURN
 For every section you change, return the whole new body of that section (everything under its heading, without the heading line), including every line you kept:
 <update>
 <heading>THE SECTION HEADING EXACTLY AS IN THE CARD</heading>
-<reason>One short line: which story events this comes from.</reason>
+<reason>One short line: which log lines this comes from.</reason>
 <text>
 the whole new section body
 </text>
 </update>
-Only update the sections listed under SECTIONS YOU MAY UPDATE. Leave out sections that need no change. If nothing in the story changes this card, return only <none/>.
-At the very end, on its own line, write the story's current date as the chat headers write it: <storydate>...</storydate>`;
+Only update the sections listed under SECTIONS YOU MAY UPDATE. Leave out sections that need no change. If nothing in the log changes this card, return only <none/>.
+At the very end, on its own line, write the newest story date in the log: <storydate>...</storydate>`;
 }
 
-export function userPrompt({ card, title, sections, story, userName }) {
+export function userPrompt({ card, title, sections, log, trackers, storyDate }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title}\n<card>\n${card}\n</card>`);
     parts.push(`SECTIONS YOU MAY UPDATE: ${sections.join(', ')}`);
-    if (story.summary) parts.push(`STORY SO FAR (summary of the older chat, in order):\n<summary>\n${story.summary}\n</summary>`);
-    if (story.recent) parts.push(`RECENT CHAT (newest at the bottom; ${userName} is the player character):\n<chat>\n${story.recent}\n</chat>`);
-    if (story.state) parts.push(`THE GAME'S TRACKERS FROM THE LATEST TURN (current situation; use it for what characters know and where things stand, never copy passing moods into the card):\n<trackers>\n${story.state}\n</trackers>`);
-    if (story.storyDate) parts.push(`CURRENT STORY DATE: ${story.storyDate}`);
+    parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
+    if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN (the current situation; use them for what they know and where things stand, never copy a passing mood into the card):\n<trackers>\n${trackers}\n</trackers>`);
+    if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
     parts.push(`Update the card for ${title}. Return only the <update> blocks (or <none/>) and the <storydate> line.`);
     return parts.join('\n\n');
 }

@@ -26,23 +26,40 @@ Pick one under **Connection source**:
 - **Connection Profile**: any profile from the Connection Manager.
 - **The chat's connection**: the model the chat uses.
 
-None of them sends your chat preset's prompts. The request holds the card, the story and the update instructions.
-Reasoning models need room to think: if replies come back empty, raise **Max tokens**.
+None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high:
+if the model runs out while thinking, the window says so instead of failing silently.
 
 ## Using it
 
 1. Open the chat and click **Update cards…**.
 2. Pick the lorebook (the chat's active lorebooks by default) and tick the cards. **Select everyone in the story**
-   ticks the cards whose names appear in the story text.
+   ticks the cards whose names appear in the story.
 3. Tick the sections to update: Identity, Personality, Appearance, History, Knowledge, Secrets, Goals,
    Relationships, Ordinary Day, Social World, Standing. Speech and Voice, sample lines, Limits, Like and Want,
    Fear and Resent, Small Habits and Inner Life are never changed.
-4. Click **Draft updates**. Cards are drafted one at a time; each shows up for review when it is done.
+4. Under the sections, each ticked card shows what it will read ("reads the whole story: 6 parts, about 22,000
+   tokens"). Click **Draft updates**.
 5. For each section: green lines are added, red lines removed. Untick what you don't want, or open
    **Edit before saving** to change the text. Then **Save ticked sections**.
 
-What the model reads: the Summaryception summary (if the chat has one), the chat after it, and the trackers
-from the latest state block. Without a summary it reads the last 60 messages (setting).
+## How it reads the story
+
+Each card is done in two steps, so no single request is huge:
+
+1. **The log.** Only the parts of the story that involve the character are read: Summaryception summary lines and
+   messages that name them (in the text or in the state block's Physics row), plus your messages right next to
+   those. A scene that never names them is something they didn't see. These parts are sent in pieces of about
+   6,000 tokens, three at a time, and each comes back as a few dated lines of what the character did, saw, heard
+   or was told.
+2. **The update.** The card is updated from the new log lines and the tracker rows that name the character,
+   not from the raw story.
+
+The log is kept in the chat. Next time only the story after the last read is used, and only log lines that aren't
+in the card yet go to the update. If reading fails partway, nothing is added to the log, so the next run starts
+from the same place. **Rebuild the ticked cards' logs from the start of the story** starts a card over.
+
+Where the chat has been summarised, the first run uses the Summaryception summary; later runs read the messages
+themselves (also the hidden ones) or the summary pieces that cover them.
 
 ## What it writes
 

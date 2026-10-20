@@ -135,33 +135,81 @@ test('diff marks added and removed lines', () => {
     assert.deepEqual(d.map(x => x.type + x.line), ['samea', 'delb', 'samec', 'addd']);
 });
 
-test('story: summary deepest layer first, then unsummarised chat, then trackers and date', () => {
-    const chat = [
-        { is_user: false, name: 'Narrator', mes: 'old', extra: { sc_ghosted: true } },
-        { is_user: true, mes: 'old 2', extra: { sc_ghosted: true } },
-        { is_user: false, name: 'Narrator', mes: '[ 🕰️ 9:00 AM | 🗓️ Day 3 - Monday 14 October | 📍 Hall ]\nRue waves.\n<!-- GFX_START --><internal_states><details><summary>📓 GM NOTEBOOK</summary>\n1. [R] Rue knows Leon paints.\n</details></internal_states><!-- GFX_END -->' },
-        { is_user: true, mes: 'I wave back.' },
-        { is_user: false, is_system: true, mes: 'hidden note' },
-    ];
-    const store = { layers: [[{ text: 'L0 recent summary.' }], [{ text: 'L1 older summary.' }]], summarizedUpTo: 1 };
-    const s = U.gatherStory(chat, store, { userName: 'Leon Kennedy' });
-    assert.equal(s.summary, 'L1 older summary.\n\nL0 recent summary.');
-    assert.ok(s.recent.startsWith('[#2] Narrator: [ 🕰️ 9:00 AM'));
-    assert.ok(s.recent.includes('[#3] Leon Kennedy: I wave back.'));
-    assert.ok(!s.recent.includes('GM NOTEBOOK'), 'state block not in the chat text');
-    assert.ok(!s.recent.includes('hidden note'));
-    assert.ok(s.state.includes('## 📓 GM NOTEBOOK') && s.state.includes('Rue knows Leon paints.'));
-    assert.equal(s.storyDate, 'Day 3 - Monday 14 October');
-    const noSummary = U.gatherStory(chat, null, { userName: 'Leon', fallbackMessages: 2 });
-    assert.equal(noSummary.hasSummary, false);
-    assert.ok(noSummary.recent.startsWith('[#3] Leon: I wave back.'));
+const STATE = (who) => `<!-- GFX_START --><internal_states><details><summary>📓 GM NOTEBOOK</summary>\n1. [R] Rue knows Leon paints.\n2. [T] Nate meets Cal at 8 PM.\n</details><details><summary>💞 BONDS</summary>\n- <b>Rue</b> | BOND 3\n</details>\n- Physics: ${who}\n</internal_states><!-- GFX_END -->`;
+
+const CHAT = [
+    { is_user: false, is_system: true, name: 'Narrator', mes: 'Day 1: Rue meets Leon at the gallery.', extra: { sc_ghosted: true } }, // 0 summarised
+    { is_user: true, mes: 'I look at the painting.' }, // 1 summarised (user, not hidden)
+    { is_user: false, is_system: true, name: 'Narrator', mes: 'Nate drives to Cal\'s.', extra: { sc_ghosted: true } }, // 2 summarised
+    { is_user: false, name: 'Narrator', mes: `[ 🕰️ 9:00 AM | 🗓️ Day 3 - Monday 14 October | 📍 Lexi's ]\nShe wakes on the couch.${STATE('Rue on the couch, Lexi in the kitchen')}` }, // 3: Rue only in Physics
+    { is_user: true, mes: 'I text her: "Coffee?"' }, // 4: user right after a Rue reply
+    { is_user: false, name: 'Narrator', mes: `Across town, Nate cleans his car.${STATE('Nate in the garage')}` }, // 5
+    { is_user: true, mes: 'I wait.' }, // 6
+    { is_user: false, is_system: true, name: 'Narrator', mes: 'hidden note' }, // 7 user-hidden
+];
+const STORE = { layers: [[{ text: 'Day 1: Rue met Leon at the gallery. Nate drove to Cal.', turnRange: [0, 2] }], [{ text: 'Day 0: older events.' }]], summarizedUpTo: 2 };
+
+test('story pieces, first run: whole summary oldest layer first, then the unsummarised chat', () => {
+    const { items, end } = U.storyItems(CHAT, STORE, { userName: 'Leon Kennedy' });
+    assert.equal(end, 7);
+    assert.deepEqual(items.map(x => x.kind + x.from), ['summary-1', 'summary0', 'message3', 'message4', 'message5', 'message6']);
+    assert.ok(items[2].text.startsWith('[#3] Narrator: [ 🕰️ 9:00 AM'));
+    assert.ok(!items[2].text.includes('GM NOTEBOOK'), 'state block not in the story text');
+    assert.equal(items[2].presence.trim(), '- Physics: Rue on the couch, Lexi in the kitchen');
+    assert.ok(items[3].text.includes('[#4] Leon Kennedy: I text her'));
 });
 
-test('prompts mention the player by name and list the sections', () => {
+test('story pieces, later run: only after the log ends; summarised messages read raw', () => {
+    const { items } = U.storyItems(CHAT, STORE, { userName: 'Leon', since: 1 });
+    assert.deepEqual(items.map(x => x.kind + x.from), ['message2', 'message3', 'message4', 'message5', 'message6'], 'ghosted message 2 is read, the user-hidden note is not');
+    const fromStart = U.storyItems(CHAT, STORE, { userName: 'Leon', since: -1 }).items;
+    assert.equal(fromStart[0].kind, 'summary', 'a dated snippet starting after the log end is used');
+    assert.equal(fromStart[1].from, 3);
+});
+
+test('filter: names in text or Physics row, plus the player\'s messages next to a kept reply', () => {
+    const { items } = U.storyItems(CHAT, STORE, { userName: 'Leon' });
+    const rue = U.filterForCharacter(items, ['Rue', 'Rue Bennett']).map(x => x.kind + x.from);
+    assert.deepEqual(rue, ['summary0', 'message3', 'message4']);
+    const nate = U.filterForCharacter(items, ['Nate']).map(x => x.kind + x.from);
+    assert.deepEqual(nate, ['summary0', 'message5', 'message4', 'message6'].sort((a, b) => items.findIndex(x => x.kind + x.from === a) - items.findIndex(x => x.kind + x.from === b)));
+});
+
+test('chunks stay under the size and remember the last message they cover', () => {
+    const items = Array.from({ length: 10 }, (_, i) => ({ kind: 'message', from: i, to: i, text: 'x'.repeat(1000) }));
+    const chunks = U.chunkItems(items, 2500);
+    assert.equal(chunks.length, 5);
+    assert.equal(chunks[4].to, 9);
+    assert.ok(chunks.every(c => c.text.length <= 2500));
+});
+
+test('tracker rows about the character, with their section', () => {
+    const t = U.trackerLines(CHAT, ['Rue']);
+    assert.ok(t.includes('📓 GM NOTEBOOK: 1. [R] Rue knows Leon paints.'));
+    assert.ok(t.includes('💞 BONDS: - Rue | BOND 3'));
+    assert.ok(!t.includes('Nate meets Cal'));
+});
+
+test('log replies: lines kept, NONE is empty, thinking stripped', () => {
+    assert.deepEqual(U.parseLog('<think>- not this</think>\nHere:\n- Day 3: wakes at Lexi\'s. Present: Rue, Lexi.\n* Day 3: Leon texts her "Coffee?".\n'), ['- Day 3: wakes at Lexi\'s. Present: Rue, Lexi.', '- Day 3: Leon texts her "Coffee?".']);
+    assert.deepEqual(U.parseLog('NONE'), []);
+    assert.deepEqual(U.parseLog('none.'), []);
+});
+
+test('story date from the newest header, or before a given message', () => {
+    assert.equal(U.storyDateFrom(CHAT), 'Day 3 - Monday 14 October');
+    assert.equal(U.storyDateFrom(CHAT, 2), '');
+});
+
+test('prompts name the character and the player, list sections and log lines', () => {
     assert.ok(U.systemPrompt('Leon Kennedy').includes('their entry for Leon Kennedy under RELATIONSHIPS'));
-    const up = U.userPrompt({ card: 'X', title: 'Rue Bennett', sections: ['HISTORY', 'RELATIONSHIPS'], story: { summary: 's', recent: 'r', state: 't', storyDate: 'Day 3' }, userName: 'Leon' });
+    assert.ok(U.logSystemPrompt('Rue Bennett', 'Leon Kennedy').includes('Everything between Rue Bennett and Leon Kennedy.'));
+    const up = U.userPrompt({ card: 'X', title: 'Rue Bennett', sections: ['HISTORY', 'RELATIONSHIPS'], log: ['- a', '- b'], trackers: 't', storyDate: 'Day 3' });
     assert.ok(up.includes('SECTIONS YOU MAY UPDATE: HISTORY, RELATIONSHIPS'));
+    assert.ok(up.includes('<log>\n- a\n- b\n</log>'));
     assert.ok(up.includes('CURRENT STORY DATE: Day 3'));
+    const lp = U.logUserPrompt({ name: 'Rue Bennett', names: ['Rue', 'R.B.'], text: 'story', lastDate: 'Day 2' });
+    assert.ok(lp.includes('also written as: Rue, R.B.') && lp.includes('Day 2') && lp.includes('<story_part>\nstory\n</story_part>'));
 });
 
 test('connection: URLs and local detection', () => {
@@ -178,12 +226,33 @@ test('connection: streamed reply keeps content, counts reasoning, survives split
         'data: {"choices":[{"delta":{"content":"<upd',
         'ate>"}}]}\n\ndata: {"choices":[{"delta":{"content":"ok</update>"}}]}\n',
         ': keep-alive\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         'data: [DONE]\n',
     ];
     const enc = new TextEncoder();
     const body = new ReadableStream({ start(c) { for (const ch of chunks) c.enqueue(enc.encode(ch)); c.close(); } });
     let last = null;
-    const text = await readStream({ body }, (p) => { last = p; });
-    assert.equal(text, '<update>ok</update>');
+    const out = await readStream({ body }, (p) => { last = p; });
+    assert.equal(out.content, '<update>ok</update>');
+    assert.equal(out.reasoningChars, 4);
+    assert.equal(out.finishReason, 'stop');
     assert.equal(last.reasoningChars, 4);
+});
+
+test('connection: a reply that ran out of tokens while thinking says so', async () => {
+    const { send } = await import('../connection.js');
+    const enc = new TextEncoder();
+    const sse = (chunks) => new ReadableStream({ start(c) { for (const ch of chunks) c.enqueue(enc.encode(ch)); c.close(); } });
+    const realFetch = globalThis.fetch;
+    const s = { source: 'openai', apiUrl: 'https://example.test/api/v1', apiKey: 'k', apiModel: 'm', maxTokens: 1000, temperature: 0.5 };
+    try {
+        globalThis.fetch = async () => ({ ok: true, body: sse(['data: {"choices":[{"delta":{"reasoning":"' + 'x'.repeat(50) + '"}}]}\n', 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n']) });
+        await assert.rejects(send(s, 'sys', 'user'), /used all 1000 max tokens thinking \(50 characters\)/);
+        globalThis.fetch = async () => ({ ok: true, body: sse(['data: {"choices":[{"delta":{"content":"<update>half"}}]}\n', 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n']) });
+        await assert.rejects(send(s, 'sys', 'user'), /cut off at Max tokens/);
+        globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => 'no' });
+        await assert.rejects(send(s, 'sys', 'user'), /401 Unauthorized/);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
 });

@@ -20,12 +20,16 @@ export function isLocalUrl(url) {
     return /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?/i.test(String(url));
 }
 
-/** Reads a streamed (SSE) chat completion and returns the reply text, without reasoning. */
+/**
+ * Reads a streamed (SSE) chat completion.
+ * @returns {Promise<{content: string, reasoningChars: number, finishReason: string}>} the reply without reasoning
+ */
 export async function readStream(response, onProgress) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let content = '';
     let reasoningChars = 0;
+    let finishReason = '';
     let buffer = '';
     try {
         for (;;) {
@@ -42,7 +46,9 @@ export async function readStream(response, onProgress) {
                 try {
                     const parsed = JSON.parse(data);
                     if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
-                    const delta = parsed.choices?.[0]?.delta || {};
+                    const choice = parsed.choices?.[0] || {};
+                    if (choice.finish_reason) finishReason = String(choice.finish_reason);
+                    const delta = choice.delta || {};
                     if (delta.content) content += delta.content;
                     const r = delta.reasoning || delta.reasoning_content;
                     if (r) reasoningChars += String(r).length;
@@ -56,7 +62,7 @@ export async function readStream(response, onProgress) {
     } finally {
         reader.releaseLock();
     }
-    return content;
+    return { content, reasoningChars, finishReason };
 }
 
 async function sendDirect(s, system, user, { signal, onProgress, maxTokens } = {}) {
@@ -91,8 +97,16 @@ async function sendDirect(s, system, user, { signal, onProgress, maxTokens } = {
         if (response.status === 401) throw new Error('The endpoint answered 401 Unauthorized. Check the API key.');
         throw new Error(`The endpoint answered ${response.status}: ${text.slice(0, 300)}`);
     }
-    const content = await readStream(response, onProgress);
-    if (!content.trim()) throw new Error('The model sent back an empty reply. If it is a reasoning model, raise Max tokens.');
+    const { content, reasoningChars, finishReason } = await readStream(response, onProgress);
+    if (!content.trim()) {
+        if (finishReason === 'length') {
+            throw new Error(`The model used all ${limit || 'its'} max tokens thinking (${reasoningChars.toLocaleString()} characters) before writing anything. Raise Max tokens, or use a model that thinks less.`);
+        }
+        throw new Error(`The model sent back an empty reply${reasoningChars ? ` after ${reasoningChars.toLocaleString()} characters of thinking` : ''}.`);
+    }
+    if (finishReason === 'length') {
+        throw new Error('The reply was cut off at Max tokens before it was finished. Raise Max tokens.');
+    }
     return content;
 }
 

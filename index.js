@@ -4,14 +4,17 @@
 
 import { looksLikeCard, nameVariants, titleCase, mentionsAny } from './cardparse.js';
 import {
-    UPDATABLE, updatableRanges, sectionRanges, rangeBody, applyReplacements, canonPointBody, gatherStory,
-    systemPrompt, userPrompt, parseReply, matchRange, lineDiff, checkUpdate,
+    UPDATABLE, updatableRanges, sectionRanges, rangeBody, applyReplacements, canonPointBody, storyItems, filterForCharacter,
+    chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
+    matchRange, lineDiff, checkUpdate,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection } from './connection.js';
 
 const MODULE = 'cardUpdater';
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
+const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
+const PARALLEL = 3; // log requests sent at the same time
 
 const DEFAULTS = Object.freeze({
     source: 'openai', // 'openai' (direct endpoint) | 'profile' | 'chat'
@@ -21,7 +24,7 @@ const DEFAULTS = Object.freeze({
     maxTokens: 32000,
     temperature: 0.5,
     profileId: '',
-    fallbackMessages: 60,
+    firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
     sections: Object.fromEntries(UPDATABLE.map(([k]) => [k, true])),
     copiedFromSummaryception: false,
 });
@@ -105,13 +108,24 @@ function countMentions(text, names) {
     return n;
 }
 
-// ---------------------------------------------------------------- versions kept in the chat
+// ---------------------------------------------------------------- data kept in the chat
+
+function chatStore() {
+    const md = ctx().chatMetadata;
+    if (!md[MODULE] || typeof md[MODULE] !== 'object') md[MODULE] = {};
+    if (!md[MODULE].versions) md[MODULE].versions = {};
+    if (!md[MODULE].logs) md[MODULE].logs = {};
+    return md[MODULE];
+}
 
 function versionStore() {
-    const md = ctx().chatMetadata;
-    if (!md[MODULE] || typeof md[MODULE] !== 'object') md[MODULE] = { versions: {} };
-    if (!md[MODULE].versions) md[MODULE].versions = {};
-    return md[MODULE].versions;
+    return chatStore().versions;
+}
+
+/** A card's log: lines of what happened to the character, the message it covers up to, and how many lines the card holds. */
+function getLog(key) {
+    const l = chatStore().logs[key];
+    return l && Array.isArray(l.lines) ? l : null;
 }
 
 async function keepVersion(card, content, storyDate) {
@@ -139,6 +153,59 @@ async function readEntry(world, uid) {
     return data?.entries?.[uid]?.content ?? null;
 }
 
+// ---------------------------------------------------------------- planning
+
+function approxTokens(chars) {
+    return Math.round(chars / 3.8);
+}
+
+/** What a card's run will read: the story pieces involving them since their log ends, in chunks. */
+function planCard(card, rebuild) {
+    const c = ctx();
+    const s = settings();
+    const key = `${card.world}|${card.uid}`;
+    const log = rebuild ? null : getLog(key);
+    const since = log && Number.isInteger(log.coveredTo) ? log.coveredTo : null;
+    const { items, end } = storyItems(c.chat, c.chatMetadata?.summaryception, { userName: c.name1, since, firstRunMessages: Number(s.firstRunMessages) || 0 });
+    const kept = filterForCharacter(items, card.names);
+    const chunks = chunkItems(kept, CHUNK_CHARS);
+    const pending = log ? log.lines.length - (log.applied || 0) : 0;
+    return { key, log, since, end, chunks, pending, readChars: chunks.reduce((a, ch) => a + ch.text.length, 0) };
+}
+
+function planText(card, plan) {
+    const parts = [];
+    if (plan.chunks.length) {
+        const from = plan.since === null ? 'the whole story' : `the story after message #${plan.since}`;
+        parts.push(`reads ${from}: ${plan.chunks.length} part${plan.chunks.length === 1 ? '' : 's'}, about ${approxTokens(plan.readChars).toLocaleString()} tokens`);
+    } else {
+        parts.push(plan.since === null ? 'nothing in the story names them' : `nothing new since message #${plan.since}`);
+    }
+    if (plan.pending) parts.push(`${plan.pending} logged line${plan.pending === 1 ? '' : 's'} not in the card yet`);
+    if (plan.log) parts.push(`log has ${plan.log.lines.length} line${plan.log.lines.length === 1 ? '' : 's'}`);
+    return `${card.title}: ${parts.join(' · ')}`;
+}
+
+/** Runs async tasks a few at a time; results come back in order. */
+async function runPool(tasks, limit) {
+    const results = new Array(tasks.length);
+    let next = 0;
+    let failed = null;
+    const worker = async () => {
+        while (next < tasks.length && !failed) {
+            const i = next++;
+            try {
+                results[i] = await tasks[i]();
+            } catch (err) {
+                failed = failed || err;
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+    if (failed) throw failed;
+    return results;
+}
+
 // ---------------------------------------------------------------- the update window
 
 function sectionChips(s) {
@@ -154,17 +221,20 @@ async function openUpdater() {
     }
     const allWorlds = c.getWorldInfoNames ? c.getWorldInfoNames() : [];
     const active = activeLorebooks();
-    const story = gatherStory(c.chat, c.chatMetadata?.summaryception, { userName: c.name1, fallbackMessages: Number(s.fallbackMessages) || 60 });
-    const storyText = [story.summary, story.recent, story.state].join('\n');
+    const hasSummary = (c.chatMetadata?.summaryception?.layers || []).some(l => Array.isArray(l) && l.length);
+    const storyDate = storyDateFrom(c.chat);
+    const storyText = storyItems(c.chat, c.chatMetadata?.summaryception, { userName: c.name1 }).items.map(x => x.text).join('\n');
 
     const root = $(`<div class="card-updater-window">
         <h3>Update character cards</h3>
-        <div class="cu-muted">Reads ${story.hasSummary ? 'the Summaryception summary, the chat after it' : `the last ${Number(s.fallbackMessages) || 60} messages (no Summaryception summary in this chat)`} and the latest trackers${story.storyDate ? `. Story date: <b>${esc(story.storyDate)}</b>` : ''}.</div>
+        <div class="cu-muted">First the story is read in parts and turned into a short log of what happened to each character; then the card is updated from that log. Logs are kept in this chat, so next time only the new part of the story is read.${hasSummary ? ' Uses the Summaryception summary where the chat has been summarised.' : ''}${storyDate ? ` Story date: <b>${esc(storyDate)}</b>.` : ''}</div>
         <div class="cu-row"><label>Lorebook</label><select class="text_pole cu-world"></select></div>
         <div class="cu-row cu-buttons"><div class="menu_button cu-select-story">Select everyone in the story</div><div class="menu_button cu-select-none">Clear</div></div>
         <div class="cu-cards"></div>
         <div class="cu-label">Sections to update</div>
         <div class="cu-chips">${sectionChips(s)}</div>
+        <label class="checkbox_label cu-rebuild"><input type="checkbox" class="cu-rebuild-box"><span>Rebuild the ticked cards' logs from the start of the story</span></label>
+        <div class="cu-plan cu-muted"></div>
         <div class="cu-row cu-buttons"><div class="menu_button cu-draft">Draft updates</div><div class="menu_button cu-stop" style="display:none">Stop after this card</div></div>
         <div class="cu-status cu-muted"></div>
         <div class="cu-results"></div>
@@ -175,6 +245,16 @@ async function openUpdater() {
     for (const w of allWorlds) worldSel.append(`<option value="${esc(w)}">${esc(w)}</option>`);
 
     let cards = [];
+    const chosenCards = () => root.find('[data-card]:checked').toArray().map(el => cards[Number(el.dataset.card)]).filter(Boolean);
+    const rebuild = () => root.find('.cu-rebuild-box').prop('checked');
+    const renderPlan = () => {
+        const chosen = chosenCards();
+        if (!chosen.length) {
+            root.find('.cu-plan').html('');
+            return;
+        }
+        root.find('.cu-plan').html(chosen.map(card => `<div>${esc(planText(card, planCard(card, rebuild())))}</div>`).join(''));
+    };
     const renderCards = async () => {
         const v = String(worldSel.val());
         const worlds = v === '__active__' ? active : [v];
@@ -182,6 +262,7 @@ async function openUpdater() {
         cards = await loadCards(worlds);
         if (!cards.length) {
             root.find('.cu-cards').html('<div class="cu-muted">No character cards found. Cards are entries with all-caps sections like SPEECH AND VOICE and PERSONALITY.</div>');
+            renderPlan();
             return;
         }
         const groups = new Map();
@@ -196,11 +277,15 @@ async function openUpdater() {
             list.sort((a, b) => b.mentions - a.mentions || a.title.localeCompare(b.title));
             for (const card of list) {
                 const i = cards.indexOf(card);
+                const log = getLog(`${card.world}|${card.uid}`);
                 const seen = card.mentions ? `in ${card.mentions} line${card.mentions === 1 ? '' : 's'} of the story` : 'not in the story';
-                html += `<label class="checkbox_label cu-card"><input type="checkbox" data-card="${i}"><span>${esc(card.title)}</span><span class="cu-muted">${seen}${card.disabled ? ' · disabled entry' : ''}</span></label>`;
+                const logged = log && Number.isInteger(log.coveredTo) ? ` · logged up to message #${log.coveredTo}` : '';
+                html += `<label class="checkbox_label cu-card"><input type="checkbox" data-card="${i}"><span>${esc(card.title)}</span><span class="cu-muted">${seen}${logged}${card.disabled ? ' · disabled entry' : ''}</span></label>`;
             }
         }
         root.find('.cu-cards').html(html);
+        root.find('[data-card]').on('change', renderPlan);
+        renderPlan();
     };
     worldSel.on('change', renderCards);
     await renderCards();
@@ -210,8 +295,13 @@ async function openUpdater() {
             const card = cards[Number(this.dataset.card)];
             this.checked = !!card && card.mentions > 0;
         });
+        renderPlan();
     });
-    root.find('.cu-select-none').on('click', () => root.find('[data-card]').prop('checked', false));
+    root.find('.cu-select-none').on('click', () => {
+        root.find('[data-card]').prop('checked', false);
+        renderPlan();
+    });
+    root.find('.cu-rebuild-box').on('change', renderPlan);
     root.find('[data-section]').on('change', function () {
         s.sections[this.dataset.section] = this.checked;
         save();
@@ -219,71 +309,127 @@ async function openUpdater() {
 
     let running = false;
     let stopAfter = false;
-    let abort = null;
+    const abort = new AbortController();
     root.find('.cu-stop').on('click', () => {
         stopAfter = true;
         root.find('.cu-status').text('Stopping after this card…');
     });
     root.find('.cu-draft').on('click', async () => {
         if (running) return;
-        const chosen = root.find('[data-card]:checked').toArray().map(el => cards[Number(el.dataset.card)]).filter(Boolean);
+        const chosen = chosenCards();
         const kinds = UPDATABLE.filter(([k]) => s.sections[k]).map(([k]) => k);
         if (!chosen.length) return toastr.info('Tick at least one card.', 'Card Updater');
         if (!kinds.length) return toastr.info('Tick at least one section.', 'Card Updater');
-        if (!story.summary && !story.recent) return toastr.info('There is no story to read yet.', 'Card Updater');
         running = true;
         stopAfter = false;
         root.find('.cu-draft').addClass('disabled');
         root.find('.cu-stop').show();
+        const doRebuild = rebuild();
         for (let i = 0; i < chosen.length; i++) {
-            if (stopAfter) break;
-            const card = chosen[i];
-            abort = new AbortController();
+            if (stopAfter || abort.signal.aborted) break;
             const block = $('<div class="cu-result"></div>').appendTo(root.find('.cu-results'));
-            await draftCard(card, kinds, story, s, block, root.find('.cu-status'), abort.signal, `${i + 1}/${chosen.length}`);
+            await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, `${i + 1}/${chosen.length}`);
         }
         running = false;
         root.find('.cu-draft').removeClass('disabled');
         root.find('.cu-stop').hide();
-        root.find('.cu-status').text(stopAfter ? 'Stopped.' : 'Done drafting. Review each card below and save what you want to keep.');
+        root.find('.cu-rebuild-box').prop('checked', false);
+        renderPlan();
+        root.find('.cu-status').text(stopAfter ? 'Stopped.' : 'Done. Review each card below and save what you want to keep.');
     });
 
     const popup = new c.Popup(root, c.POPUP_TYPE.TEXT, '', { wide: true, large: true, okButton: 'Close', allowVerticalScrolling: true, leftAlign: true });
     await popup.show();
-    if (abort) abort.abort();
+    abort.abort();
 }
 
-async function draftCard(card, kinds, story, s, block, status, signal, counter) {
+function cardHead(card, extra = '') {
+    return `<div class="cu-card-title">${esc(card.title)} <span class="cu-muted">${esc(card.world)}${extra ? ` · ${esc(extra)}` : ''}</span></div>`;
+}
+
+async function runCard(card, kinds, rebuild, s, block, status, signal, counter) {
     const c = ctx();
+    const started = Date.now();
+    const elapsed = () => `${Math.round((Date.now() - started) / 1000)} s`;
     const content = await readEntry(card.world, card.uid);
     if (content === null) {
-        block.html(`<div class="cu-card-title">${esc(card.title)}</div><div class="cu-warn">Entry not found.</div>`);
+        block.html(`${cardHead(card)}<div class="cu-warn">Entry not found.</div>`);
         return;
     }
     const ranges = updatableRanges(content, new Set(kinds));
     if (!ranges.length) {
-        block.html(`<div class="cu-card-title">${esc(card.title)}</div><div class="cu-muted">This card has none of the ticked sections.</div>`);
+        block.html(`${cardHead(card)}<div class="cu-muted">This card has none of the ticked sections.</div>`);
         return;
     }
-    const started = Date.now();
-    const tick = setInterval(() => status.text(`Drafting ${card.title} (${counter})… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
-    status.text(`Drafting ${card.title} (${counter})…`);
+
+    // Step 1: read the new part of the story into the character's log.
+    const plan = planCard(card, rebuild);
+    const log = plan.log ? structuredClone(plan.log) : { coveredTo: null, lines: [], applied: 0 };
+    if (plan.chunks.length) {
+        let done = 0;
+        const show = () => status.text(`${card.title} (${counter}): reading the story, ${done} of ${plan.chunks.length} part${plan.chunks.length === 1 ? '' : 's'} done… ${elapsed()}`);
+        show();
+        const tick = setInterval(show, 1000);
+        const sys = logSystemPrompt(card.title, c.name1);
+        const tasks = plan.chunks.map(chunk => async () => {
+            const firstMsg = chunk.items.find(x => x.kind === 'message' || x.from >= 0);
+            const lastDate = firstMsg && firstMsg.from > 0 ? storyDateFrom(c.chat, firstMsg.from - 1) : '';
+            const reply = await send(s, sys, logUserPrompt({ name: card.title, names: card.names, text: chunk.text, lastDate }), { signal });
+            done++;
+            return parseLog(reply);
+        });
+        let parts;
+        try {
+            parts = await runPool(tasks, PARALLEL);
+        } catch (err) {
+            clearInterval(tick);
+            const msg = signal.aborted ? 'Cancelled.' : `Reading the story failed: ${err?.message || err}`;
+            block.html(`${cardHead(card, elapsed())}<div class="cu-warn">${esc(msg)} Nothing was saved to the log, so the next run starts from the same place.</div>`);
+            return;
+        }
+        clearInterval(tick);
+        if (rebuild) {
+            log.lines = [];
+            log.applied = 0;
+        }
+        for (const lines of parts) log.lines.push(...lines);
+    }
+    log.coveredTo = plan.end;
+    chatStore().logs[plan.key] = log;
+    await c.saveMetadata();
+
+    const newLines = log.lines.slice(log.applied || 0);
+    if (!newLines.length) {
+        block.html(`${cardHead(card, elapsed())}<div class="cu-muted">Nothing new involving ${esc(card.title)} since the last update.</div>`);
+        return;
+    }
+
+    // Step 2: update the card from the new log lines.
+    const tick2 = setInterval(() => status.text(`${card.title} (${counter}): updating the card from ${newLines.length} log lines… ${elapsed()}`), 1000);
+    status.text(`${card.title} (${counter}): updating the card from ${newLines.length} log lines…`);
     let reply;
     try {
-        reply = await send(s, systemPrompt(c.name1), userPrompt({ card: content, title: card.title, sections: ranges.map(r => r.title), story, userName: c.name1 }), {
+        reply = await send(s, systemPrompt(c.name1), userPrompt({
+            card: content, title: card.title, sections: ranges.map(r => r.title), log: newLines,
+            trackers: trackerLines(c.chat, card.names), storyDate: storyDateFrom(c.chat),
+        }), {
             signal,
-            onProgress: ({ contentChars, reasoningChars }) => status.text(`Drafting ${card.title} (${counter})… ${Math.round((Date.now() - started) / 1000)} s · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
+            onProgress: ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): updating the card… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
         });
     } catch (err) {
-        clearInterval(tick);
+        clearInterval(tick2);
         console.error(LOG, err);
-        block.html(`<div class="cu-card-title">${esc(card.title)}</div><div class="cu-warn">Drafting failed: ${esc(err?.message || err)}</div>`);
+        const msg = signal.aborted ? 'Cancelled.' : `Updating the card failed: ${err?.message || err}`;
+        block.html(`${cardHead(card, elapsed())}<div class="cu-warn">${esc(msg)} The log is saved, so the next run goes straight to this step.</div>${logDetails(newLines)}`);
         return;
     }
-    clearInterval(tick);
-    const secs = Math.round((Date.now() - started) / 1000);
+    clearInterval(tick2);
     const parsed = parseReply(reply);
-    renderReview(card, content, ranges, parsed, story.storyDate || parsed.storyDate, block, secs, reply);
+    renderReview(card, content, ranges, parsed, storyDateFrom(c.chat) || parsed.storyDate, block, elapsed(), reply, { key: plan.key, appliedTo: log.lines.length, newLines });
+}
+
+function logDetails(lines) {
+    return `<details><summary>Log lines used (${lines.length})</summary><pre class="cu-pre">${esc(lines.join('\n'))}</pre></details>`;
 }
 
 function diffHtml(oldBody, newBody) {
@@ -294,7 +440,7 @@ function diffHtml(oldBody, newBody) {
     }).join('');
 }
 
-function renderReview(card, content, ranges, parsed, storyDate, block, secs, rawReply) {
+function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo) {
     const lines = content.split(/\r?\n/);
     const items = [];
     const unplaced = [];
@@ -310,11 +456,18 @@ function renderReview(card, content, ranges, parsed, storyDate, block, secs, raw
         items.push({ range: r, kind: r.kind, title: r.title, reason: u.reason, oldBody, newBody: u.text, accept: r.kind !== 'personality' });
     }
 
-    const head = `<div class="cu-card-title">${esc(card.title)} <span class="cu-muted">${esc(card.world)} · ${secs} s</span></div>`;
+    const head = cardHead(card, took);
+    const tail = `${logDetails(logInfo.newLines)}<details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
     if (!items.length) {
-        const why = parsed.none ? 'Nothing in the story changes this card.' : 'No usable changes in the reply.';
+        const why = parsed.none ? 'Nothing in the log changes this card.' : 'No usable changes in the reply.';
         block.html(`${head}<div class="cu-muted">${why}${unplaced.length ? ` Could not place: ${esc(unplaced.join(', '))}.` : ''}</div>
-            <details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`);
+            <div class="cu-row cu-buttons"><div class="menu_button cu-mark">Mark these log lines as done</div></div>${tail}`);
+        block.find('.cu-mark').on('click', async () => {
+            const log = getLog(logInfo.key);
+            if (log) log.applied = Math.max(log.applied || 0, logInfo.appliedTo);
+            await ctx().saveMetadata();
+            block.find('.cu-mark').replaceWith('<div class="cu-ok">Done. Next time only newer lines are used.</div>');
+        });
         return;
     }
 
@@ -340,20 +493,19 @@ function renderReview(card, content, ranges, parsed, storyDate, block, secs, raw
                 <details><summary>Edit before saving</summary><textarea class="text_pole cu-edit" data-edit="${i}" rows="10">${esc(it.newBody)}</textarea></details>
             </div>`;
         });
-        html += `<div class="cu-row cu-buttons"><div class="menu_button cu-save">Save ticked sections</div></div>
-            <details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
+        html += `<div class="cu-row cu-buttons"><div class="menu_button cu-save">Save ticked sections</div></div>${tail}`;
         block.html(html);
         block.find('[data-accept]').on('change', function () { all[Number(this.dataset.accept)].accept = this.checked; });
         block.find('[data-edit]').on('change', function () {
             all[Number(this.dataset.edit)].newBody = this.value.replace(/\s+$/, '');
             render();
         });
-        block.find('.cu-save').on('click', () => saveReview(card, content, all, storyDate, block));
+        block.find('.cu-save').on('click', () => saveReview(card, content, all, storyDate, block, logInfo));
     };
     render();
 }
 
-async function saveReview(card, content, items, storyDate, block) {
+async function saveReview(card, content, items, storyDate, block, logInfo) {
     const chosen = items.filter(it => it.accept);
     if (!chosen.length || (chosen.length === 1 && chosen[0].kind === 'canon')) {
         toastr.info('Tick at least one section to save.', 'Card Updater');
@@ -368,8 +520,13 @@ async function saveReview(card, content, items, storyDate, block) {
         const updated = applyReplacements(content, chosen.map(it => ({ start: it.range.start, end: it.range.end, body: it.newBody })));
         await keepVersion(card, content, storyDate);
         await writeEntry(card.world, card.uid, updated);
+        const log = getLog(logInfo.key);
+        if (log) {
+            log.applied = Math.max(log.applied || 0, logInfo.appliedTo);
+            await ctx().saveMetadata();
+        }
         block.find('.cu-save').replaceWith(`<div class="cu-ok">Saved ${chosen.length} section${chosen.length === 1 ? '' : 's'}. The previous version is kept under Versions.</div>`);
-        block.find('input, textarea').prop('disabled', true);
+        block.find('.cu-item input, .cu-item textarea').prop('disabled', true);
         toastr.success(`${card.title} updated.`, 'Card Updater');
     } catch (err) {
         console.error(LOG, err);
@@ -468,8 +625,8 @@ function settingsHtml() {
         <div class="cu-muted">Uses the chat's model and sampler settings, without your preset's prompts.</div>
       </div>
       <div class="cu-grid">
-        <label for="cu_fallback" title="Used when the chat has no Summaryception summary">Messages read without a summary</label>
-        <input id="cu_fallback" class="text_pole" type="number" min="10" max="400" step="10">
+        <label for="cu_first" title="Only for a chat with no Summaryception summary: how many of the newest messages a card's first run reads. 0 reads the whole chat.">First run without a summary: newest messages read (0 = all)</label>
+        <input id="cu_first" class="text_pole" type="number" min="0" step="50">
       </div>
       <div id="cu_test_result" class="cu-muted"></div>
     </div>
@@ -515,7 +672,7 @@ function bindSettings() {
     $('#cu_model').on('input', function () { s.apiModel = this.value.trim(); save(); });
     $('#cu_max').on('input', function () { s.maxTokens = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
-    $('#cu_fallback').val(s.fallbackMessages).on('input', function () { s.fallbackMessages = Math.max(10, parseInt(this.value, 10) || 60); save(); });
+    $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });
 
     $('#cu_copy_sc').on('click', () => {
         const sc = summaryceptionConnection();
