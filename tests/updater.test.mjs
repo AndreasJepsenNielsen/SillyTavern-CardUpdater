@@ -296,3 +296,16 @@ test('connection: a looping stream is stopped early with the end of the thinking
         globalThis.fetch = realFetch;
     }
 });
+
+test('connection: a model that refuses thinking off is reported as such', async () => {
+    const { send, ThinkingRequiredError } = await import('../connection.js');
+    const realFetch = globalThis.fetch;
+    try {
+        globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => '{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}' });
+        const s = { source: 'openai', apiUrl: 'https://example.test/api/v1', apiModel: 'z-ai/glm-5.3-flash', maxTokens: 1000 };
+        await assert.rejects(send(s, 'sys', 'user', { reasoning: 'off' }), (e) => e instanceof ThinkingRequiredError);
+        await assert.rejects(send(s, 'sys', 'user', { reasoning: 'low' }), (e) => !(e instanceof ThinkingRequiredError) && /400/.test(e.message));
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});

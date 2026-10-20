@@ -8,7 +8,7 @@ import {
     chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
     matchRange, lineDiff, checkUpdate,
 } from './updater.js';
-import { send, testConnection, summaryceptionConnection, ModelError } from './connection.js';
+import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
 const LOG = '[Card Updater]';
@@ -197,9 +197,17 @@ function planText(card, plan) {
 
 /** Sends once, and once more if the model got stuck or ran out of tokens. */
 async function sendWithRetry(s, system, user, opts) {
+    // Models that can't think "off" (remembered per model) get Low instead.
+    if (opts.reasoning === 'off' && s.thinkingRequired?.[s.apiModel]) opts = { ...opts, reasoning: 'low' };
     try {
         return await send(s, system, user, opts);
     } catch (err) {
+        if (err instanceof ThinkingRequiredError) {
+            s.thinkingRequired = { ...(s.thinkingRequired || {}), [s.apiModel]: true };
+            save();
+            toastr.info(`${s.apiModel} can't have thinking off, so Low is used for it.`, 'Card Updater');
+            return sendWithRetry(s, system, user, { ...opts, reasoning: 'low' });
+        }
         if (opts.signal?.aborted || !(err instanceof ModelError) || !err.retryable) throw err;
         console.warn(LOG, 'retrying after:', err.message);
         if (opts.onRetry) opts.onRetry(err);

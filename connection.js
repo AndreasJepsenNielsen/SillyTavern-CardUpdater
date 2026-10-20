@@ -29,6 +29,9 @@ export class ModelError extends Error {
     }
 }
 
+/** The endpoint refused to turn thinking off for this model. */
+export class ThinkingRequiredError extends Error {}
+
 /**
  * True when the end of the text is repeating itself: its last stretch already appears at least three times
  * in the stretch before it. A model caught in a loop writes the same paragraph over and over.
@@ -150,6 +153,9 @@ async function sendDirect(s, system, user, { signal, onProgress, maxTokens, reas
     if (!response.ok) {
         const text = await response.text().catch(() => '');
         if (response.status === 401) throw new Error('The endpoint answered 401 Unauthorized. Check the API key.');
+        if (response.status === 400 && thinking?.enabled === false && /reasoning[\s\S]{0,80}(mandatory|required|cannot be disabled)/i.test(text)) {
+            throw new ThinkingRequiredError(`${s.apiModel} can't have thinking turned off.`);
+        }
         throw new Error(`The endpoint answered ${response.status}: ${text.slice(0, 300)}`);
     }
     const { content, reasoningChars, reasoningTail, finishReason } = await readStream(response, onProgress);
