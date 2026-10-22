@@ -2,7 +2,7 @@
 // Drafts updates to character cards from what has happened in the chat. You review every section
 // before anything is saved, and the previous version is kept in the chat so it can be restored.
 
-import { looksLikeCard, nameVariants, titleCase, mentionsAny } from './cardparse.js';
+import { looksLikeCard, nameVariants, titleCase, mentionsAny, stringHash } from './cardparse.js';
 import {
     UPDATABLE, updatableRanges, sectionRanges, rangeBody, applyReplacements, canonPointBody, storyItems, filterForCharacter,
     chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
@@ -137,7 +137,29 @@ function chatStore() {
     if (!md[MODULE].versions) md[MODULE].versions = {};
     if (!md[MODULE].logs) md[MODULE].logs = {};
     if (!md[MODULE].originals) md[MODULE].originals = {};
+    if (!md[MODULE].saved) md[MODULE].saved = {};
     return md[MODULE];
+}
+
+/**
+ * If the card was changed outside Card Updater since it last saved it (by hand, or in another chat), that text
+ * becomes the card's original: Tighten then leaves those edits alone. Cards updated before this was tracked
+ * count as changed once.
+ * @returns {Promise<boolean>} whether the card was found changed
+ */
+async function syncBaseline(key, current) {
+    const st = chatStore();
+    const h = String(stringHash(current));
+    if (st.saved[key] === h) return false;
+    const known = st.saved[key] !== undefined || getOriginal(key) !== null;
+    if (known) st.originals[key] = current;
+    st.saved[key] = h;
+    await ctx().saveMetadata();
+    return known;
+}
+
+function editedNote(edited) {
+    return edited ? '<div class="cu-muted">This card was changed outside Card Updater since its last update, so the current text now counts as its original: Tighten leaves those lines alone.</div>' : '';
 }
 
 /** The card as it was before its first update in this chat, for telling original lines from lines added in play. */
@@ -424,6 +446,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
         block.html(`${cardHead(card)}<div class="cu-muted">This card has none of the ticked sections.</div>`);
         return;
     }
+    const edited = await syncBaseline(`${card.world}|${card.uid}`, content);
 
     // Step 1: read the new part of the story into the character's log.
     const plan = planCard(card, rebuild);
@@ -490,7 +513,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
     }
     clearInterval(tick2);
     const parsed = parseReply(reply);
-    renderReview(card, content, ranges, parsed, storyDateFrom(c.chat) || parsed.storyDate, block, elapsed(), reply, { key: plan.key, appliedTo: log.lines.length, newLines });
+    renderReview(card, content, ranges, parsed, storyDateFrom(c.chat) || parsed.storyDate, block, elapsed(), reply, { key: plan.key, appliedTo: log.lines.length, newLines }, { edited });
 }
 
 function logDetails(lines) {
@@ -515,6 +538,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
         return;
     }
     const key = `${card.world}|${card.uid}`;
+    const edited = await syncBaseline(key, content);
     const original = getOriginal(key);
     const ranges = updatableRanges(content, new Set(kinds));
     if (original === null && !includeOriginal) {
@@ -523,7 +547,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
     }
     const marked = markNewLines(content, original, ranges);
     if (!marked.newLines && !includeOriginal) {
-        block.html(`${cardHead(card)}<div class="cu-muted">The ticked sections have no lines added by updates, so there is nothing to tighten.</div>`);
+        block.html(`${cardHead(card)}${editedNote(edited)}<div class="cu-muted">The ticked sections have no lines added by updates, so there is nothing to tighten. Tick "also condense the original card" to tighten it anyway.</div>`);
         return;
     }
     const tokens = approxTokens(content.length);
@@ -548,7 +572,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
     clearInterval(tick);
     const parsed = parseReply(reply);
     for (const u of parsed.updates) u.text = stripNewMarks(u.text);
-    renderReview(card, content, ranges, parsed, '', block, elapsed(), reply, null, { tighten: true, original: original ?? content });
+    renderReview(card, content, ranges, parsed, '', block, elapsed(), reply, null, { tighten: true, original: original ?? content, edited });
 }
 
 function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo, opts = {}) {
@@ -570,7 +594,7 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
     const conflicts = (parsed.conflicts || []).length
         ? `<div class="cu-conflicts"><div class="cu-warn"><b>Lines that may no longer be true</b> (fix these yourself, in the lorebook):</div>${parsed.conflicts.map(x => `<div class="cu-warn">• ${esc(x)}</div>`).join('')}</div>`
         : '';
-    const head = cardHead(card, took) + conflicts;
+    const head = cardHead(card, took) + editedNote(opts.edited) + conflicts;
     const tail = `${logInfo ? logDetails(logInfo.newLines) : ''}<details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
     if (!items.length && opts.tighten) {
         block.html(`${head}<div class="cu-muted">${parsed.none ? 'Nothing to cut.' : 'No usable changes in the reply.'}${unplaced.length ? ` Could not place: ${esc(unplaced.join(', '))}.` : ''}</div>${tail}`);
@@ -660,6 +684,8 @@ async function saveReview(card, content, items, storyDate, block, logInfo) {
         const updated = applyReplacements(content, chosen.map(it => ({ start: it.range.start, end: it.range.end, body: it.newBody })));
         await keepVersion(card, content, storyDate);
         await writeEntry(card.world, card.uid, updated);
+        chatStore().saved[`${card.world}|${card.uid}`] = String(stringHash(updated));
+        await ctx().saveMetadata();
         const log = logInfo ? getLog(logInfo.key) : null;
         if (log) {
             log.applied = Math.max(log.applied || 0, logInfo.appliedTo);
@@ -707,6 +733,8 @@ async function openVersions() {
                 if (current === null) throw new Error('The entry is no longer in the lorebook.');
                 await keepVersion({ world: v.world, uid: v.uid, title: v.title }, current, '');
                 await writeEntry(v.world, v.uid, v.content);
+                chatStore().saved[this.dataset.key] = String(stringHash(v.content));
+                await ctx().saveMetadata();
                 toastr.success(`${v.title} restored. The version it replaced is kept too.`, 'Card Updater');
                 render();
             } catch (err) {

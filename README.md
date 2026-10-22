@@ -114,6 +114,10 @@ splits crammed lines, rewrites shorthand as plain sentences and keeps each Share
 matter most. A change to an original line is flagged and left unticked. Each card's size is shown in the list,
 and the review shows the size before and after the ticked changes.
 
+If a card is changed outside Card Updater after it last saved it (by hand, or in another chat), the next run
+notices and takes the current text as the card's original, so Tighten leaves those edits alone. Cards updated
+before version 0.4.1 count as changed once.
+
 **Tighten: also condense the original card** lets Tighten work on the original lines too: repeats, and old backstory
 down to one line per period of the character's life, cutting episodes with side characters who never come up now.
 Every change to an original line still arrives flagged and unticked.
