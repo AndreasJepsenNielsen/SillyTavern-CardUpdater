@@ -28,8 +28,11 @@ Pick one under **Connection source**:
 
 None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high.
 
-**Thinking** (direct connection, sent as OpenRouter's reasoning setting): Medium for every step by default. Low
-thinking mixed up who did what. A model that can't think "off" (OpenRouter answers "Reasoning is mandatory") gets
+**Thinking** (direct connection, sent as OpenRouter's reasoning setting): Medium for reading the story and for the
+check pass, High for updating and tightening a card. Low thinking mixed up who did what.
+
+**Model for updating and tightening**: leave empty to use the same model for every step, or put a stronger model
+here (for example `z-ai/glm-5.3`) and keep a fast one above for reading the story. A model that can't think "off" (OpenRouter answers "Reasoning is mandatory") gets
 Low instead of Off, remembered per model. Temperature defaults to 0.8;
 GLM's reasoning models get stuck in loops more easily at low temperatures.
 
@@ -101,7 +104,26 @@ Contradictions: when the story has the character saying or doing something that 
 the update changes that line if its section is ticked, or reports it. Reports show at the top of the review under
 **Lines that may no longer be true**, to fix by hand.
 
+## The check pass
+
+After each draft (updates and Tighten), one more request reads the old and new text of every changed section next
+to the log and the rest of the card, and reports:
+
+- **Lost**: a fact that disappeared although the log doesn't show it stopped being true.
+- **Not in the log**: a new statement that neither the log nor the old card supports.
+- **Wrong**: something the log contradicts (who did what to whom, the act, dates, a name mix-up).
+- **Said twice**: a new fact the card already states elsewhere.
+
+Each finding shows on its section. A section with something lost, unsupported or wrong comes unticked. Separately,
+the code flags any added line that is mostly the same words as another line on the card, and says where.
+Turn the check off with **Check each draft**.
+
 ## Size and Tighten
+
+Anything involving your persona lives only in their entry for you, even when other people were there; an event
+with another person who has an entry goes in that person's entry; HISTORY only gets life changes and events with
+nobody who has an entry. Lines are edited, not rewritten: a new fact is added to a line, and the line's other facts
+stay in their words.
 
 Updates are told the card's size and the **Card size limit** (5,000 tokens by default, the template's limit for a
 lead): an update may not take a card over it, and a card that is already over only gets what is essential. They

@@ -1,6 +1,6 @@
 // Card Updater: the parts that don't touch SillyTavern (sections, prompt, reply parsing, diffs, checks).
 
-import { headingInfo, classifyHeading, cleanProse, stateBlock, physicsText, mentionsAny } from './cardparse.js';
+import { headingInfo, classifyHeading, cleanProse, stateBlock, physicsText, mentionsAny, sigWords, overlap } from './cardparse.js';
 
 /** Sections the updater may change, in the order they're offered. */
 export const UPDATABLE = [
@@ -293,9 +293,10 @@ export function parseLog(reply) {
 function sayItOnce(u) {
     return `SAY IT ONCE
 Each fact lives in one section, its home. Before you write a fact, find every place the card already states it. Keep it in its home; anywhere else, cut it, or keep a few words only when that section needs a different angle on it.
-- Anything between this character and ${u}: their entry for ${u} under RELATIONSHIPS.
-- Events with other people: one line in HISTORY. That person's RELATIONSHIPS entry gets a few words in Shared history only when the event changed things between them.
-- What they found out: KNOWLEDGE, only when it is not already a HISTORY line.
+- Anything involving ${u}, even when other people were there too: only in their entry for ${u} under RELATIONSHIPS. Never in HISTORY or KNOWLEDGE. Another person's entry mentions ${u} only for what is about that person (what they hide from that person, for example).
+- An event with another person who has an entry: that person's entry (a few words in Shared history, or their Now line), not HISTORY.
+- HISTORY only gets life changes (moving, a job, a break-up, a lasting injury) and events with nobody who has an entry.
+- What they found out: KNOWLEDGE, only when it is not already an event anywhere in the card.
 - What they hide: SECRETS. A Hides line in a relationship entry names the secret in a few words.
 - What they fear or resent: the fear section, not PERSONALITY.
 - Where they stand in a group: STANDING.
@@ -366,6 +367,7 @@ ${CHECKS}
 
 HOW TO WRITE IT
 - Keep the card's own format exactly: the same headings, bullet style, field labels (Wants:, Hides:, Speech:, Shared history:, Now:) and line layout. Keep every line you are not changing exactly as it is, in its place.
+- Edit lines, don't rewrite them. When a line needs a new fact, add it to that line or change only the words that are no longer true, and keep every other fact in the line in its own words. Remove a fact only when the log shows it is no longer true, and say which in the reason.
 - HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Write events, not what they meant. Most log lines don't belong in the card at all.
 - Add to a Shared history only events that changed things between the two. Most days add nothing there.
 - KNOWLEDGE uses: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation." Only add what they learned in the story.
@@ -491,6 +493,103 @@ export function tightenUserPrompt({ card, title, sections, tokens, limit }) {
     ].join('\n\n');
 }
 
+// ---------------------------------------------------------------- step 3: checking a draft
+
+export function checkSystemPrompt(userName, { tighten = false } = {}) {
+    const u = userName || 'the player character';
+    const task = tighten
+        ? `A proposed change shortens sections of a character card. Compare the old and new text of each changed section with the rest of the card and report problems.
+- LOST: a fact in the old text that is now nowhere in the card. Cutting a fact that the card still states in another section is fine.
+- UNSUPPORTED: a statement in the new text that the old card doesn't contain.
+- WRONG: something the new text changed in meaning (who did what to whom, dates, conditions such as when, usually, after).`
+        : `A proposed update changes sections of a character card. Compare the old and new text of each changed section with the log of what happened and with the rest of the card, and report problems.
+- LOST: a fact in the old text that the new text no longer has, while the log does not show it stopped being true.
+- UNSUPPORTED: a statement in the new text that neither the log nor the old card contains.
+- WRONG: something in the new text that the log contradicts: who did what to whom, which act, dates, who was there, or a name mixed up.
+- TWICE: a fact the new text adds that the card already states in another section or another entry (name where). Anything involving ${u} belongs only in their entry for ${u}.`;
+    return `You check proposed changes to a character card for a long-running roleplay. You don't rewrite anything; you only report.
+
+${task}
+
+Quote the words exactly. One tag per problem:
+<lost section="HEADING">the old words that went missing</lost>
+<unsupported section="HEADING">the new words with nothing behind them</unsupported>
+<wrong section="HEADING">the new words, then -> what the log says</wrong>
+<twice section="HEADING">the new words, then -> where the card already says it</twice>
+If there are no problems, reply with exactly: <ok/>`;
+}
+
+export function checkUserPrompt({ card, title, items, log }) {
+    const parts = [`CHARACTER CARD AS IT IS NOW: ${title}\n<card>\n${card}\n</card>`];
+    if (log && log.length) parts.push(`WHAT HAPPENED (the log the update was written from):\n<log>\n${log.join('\n')}\n</log>`);
+    parts.push(`PROPOSED CHANGES:\n${items.map(it => `<section heading="${it.title}">\n<old>\n${it.oldBody}\n</old>\n<new>\n${it.newBody}\n</new>\n</section>`).join('\n')}`);
+    parts.push('Report every problem, or <ok/>.');
+    return parts.join('\n\n');
+}
+
+/** @returns {{kind: 'lost'|'unsupported'|'wrong'|'twice', section: string, text: string}[] | null} null when the reply has nothing readable */
+export function parseCheck(reply) {
+    const text = String(reply ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+    const out = [];
+    for (const m of text.matchAll(/<(lost|unsupported|wrong|twice)(?:\s+section="([^"]*)")?\s*>([\s\S]*?)<\/\1>/gi)) {
+        const t = m[3].trim();
+        if (t) out.push({ kind: m[1].toLowerCase(), section: (m[2] || '').trim(), text: t });
+    }
+    if (!out.length && !/<ok\s*\/?>/i.test(text)) return null;
+    return out;
+}
+
+const DATE_WORDS = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february',
+    'march', 'april', 'august', 'september', 'october', 'november', 'december', 'morning', 'afternoon', 'evening', 'midnight']);
+
+/** Which section (and, inside RELATIONSHIPS, which person's entry) each line of a card belongs to. */
+export function lineLabels(text) {
+    const lines = String(text ?? '').split(/\r?\n/);
+    const labels = new Array(lines.length).fill('');
+    for (const r of sectionRanges(text)) {
+        let entry = '';
+        for (let i = r.start; i < r.end; i++) {
+            if (r.kind === 'relationships' && i > r.start) {
+                const h = headingInfo(lines[i]);
+                if (h) entry = h.core;
+            }
+            labels[i] = r.kind === 'relationships' && entry ? `${r.title} / ${entry}` : (r.title || 'top of the card');
+        }
+    }
+    return labels;
+}
+
+/**
+ * Added lines that say much the same as another line of the card after the change.
+ * @param {string} newCard the card with the proposed changes applied
+ * @param {string[]} addedLines lines the change adds
+ * @param {string[]} ignoreNames names that shouldn't count as shared words (the character, the player)
+ * @returns {{line: string, other: string, where: string}[]}
+ */
+export function findRepeats(newCard, addedLines, ignoreNames = []) {
+    const exclude = new Set([...DATE_WORDS, ...ignoreNames.flatMap(n => String(n).toLowerCase().split(/\s+/))]);
+    const lines = String(newCard ?? '').split(/\r?\n/);
+    const labels = lineLabels(newCard);
+    const sigs = lines.map(l => sigWords(l, exclude));
+    const out = [];
+    for (const added of addedLines) {
+        const a = sigWords(added, exclude);
+        if (a.size < 4) continue;
+        const self = lines.findIndex(l => l === added);
+        let best = null;
+        lines.forEach((l, i) => {
+            if (i === self || !l.trim() || l.trim() === added.trim()) return;
+            const b = sigs[i];
+            if (b.size < 4) return;
+            const shared = overlap(a, b);
+            const ratio = shared / Math.min(a.size, b.size);
+            if (shared >= 4 && ratio >= 0.6 && (!best || ratio > best.ratio)) best = { ratio, i };
+        });
+        if (best) out.push({ line: added.trim(), other: lines[best.i].trim(), where: labels[best.i] });
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------- the reply
 
 function inner(block, tag) {
@@ -587,7 +686,12 @@ export function checkUpdate(kind, oldBody, newBody) {
         const m = line.match(/\[check:([^\]]*)\]/i);
         if (m) warnings.push(`Unsure who did it, check before saving: "${m[1].trim()}"`);
     }
-    const long = added.filter(l => l.split(/\s+/).filter(Boolean).length > 70);
+    const removed2 = diff.filter(d => d.type === 'del').map(d => d.line.trim().replace(/[.;,]$/, '')).filter(x => x.length > 20);
+    const words = (t) => t.split(/\s+/).filter(Boolean).length;
+    const long = added.filter((l) => {
+        const base = removed2.find(r => l.includes(r));
+        return words(base ? l.replace(base, '') : l) > 70;
+    });
     if (long.length) warnings.push(`${long.length} added line${long.length === 1 ? ' is' : 's are'} over 70 words: "${long[0].trim().slice(0, 60)}…"`);
     return warnings;
 }

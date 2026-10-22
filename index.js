@@ -7,6 +7,7 @@ import {
     UPDATABLE, updatableRanges, sectionRanges, rangeBody, applyReplacements, canonPointBody, storyItems, filterForCharacter,
     chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
     matchRange, lineDiff, checkUpdate, markNewLines, stripNewMarks, lostOriginalLines, tightenSystemPrompt, tightenUserPrompt,
+    checkSystemPrompt, checkUserPrompt, parseCheck, findRepeats,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
@@ -24,7 +25,10 @@ const DEFAULTS = Object.freeze({
     maxTokens: 32000,
     temperature: 0.8,
     logThinking: 'medium', // low thinking mixed up who did what
-    updateThinking: 'medium',
+    updateThinking: 'high',
+    checkThinking: 'medium',
+    updateModel: '', // model for updating and tightening; empty = the same as for reading
+    checkDrafts: true,
     cardLimit: 5000, // tokens; the template's limit for a lead
     profileId: '',
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
@@ -45,7 +49,7 @@ function settings() {
         if (s[k] === undefined) s[k] = typeof v === 'object' ? structuredClone(v) : v;
     }
     for (const [k] of UPDATABLE) if (s.sections[k] === undefined) s.sections[k] = true;
-    if (firstLoad) s.settingsVersion = 4;
+    if (firstLoad) s.settingsVersion = 5;
     if ((s.settingsVersion || 1) < 2) {
         // 0.5 was the first default; GLM's reasoning models loop more easily that low.
         if (s.temperature === 0.5) s.temperature = 0.8;
@@ -61,6 +65,11 @@ function settings() {
         if (['off', 'low', 'default'].includes(s.logThinking)) s.logThinking = 'medium';
         if (['off', 'low', 'default'].includes(s.updateThinking)) s.updateThinking = 'medium';
         s.settingsVersion = 4;
+    }
+    if (s.settingsVersion < 5) {
+        // Updating a card is the hard step; it gets more room to think.
+        if (s.updateThinking === 'medium') s.updateThinking = 'high';
+        s.settingsVersion = 5;
     }
     return s;
 }
@@ -243,14 +252,15 @@ function planText(card, plan) {
 /** Sends once, and once more if the model got stuck or ran out of tokens. */
 async function sendWithRetry(s, system, user, opts) {
     // Models that can't think "off" (remembered per model) get Low instead.
-    if (opts.reasoning === 'off' && s.thinkingRequired?.[s.apiModel]) opts = { ...opts, reasoning: 'low' };
+    const modelName = opts.model || s.apiModel;
+    if (opts.reasoning === 'off' && s.thinkingRequired?.[modelName]) opts = { ...opts, reasoning: 'low' };
     try {
         return await send(s, system, user, opts);
     } catch (err) {
         if (err instanceof ThinkingRequiredError) {
-            s.thinkingRequired = { ...(s.thinkingRequired || {}), [s.apiModel]: true };
+            s.thinkingRequired = { ...(s.thinkingRequired || {}), [modelName]: true };
             save();
-            toastr.info(`${s.apiModel} can't have thinking off, so Low is used for it.`, 'Card Updater');
+            toastr.info(`${modelName} can't have thinking off, so Low is used for it.`, 'Card Updater');
             return sendWithRetry(s, system, user, { ...opts, reasoning: 'low' });
         }
         if (opts.signal?.aborted || !(err instanceof ModelError) || !err.retryable) throw err;
@@ -502,6 +512,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
         }), {
             signal,
             reasoning: s.updateThinking,
+            model: s.updateModel,
             onProgress: ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): updating the card… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
             onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
         });
@@ -513,7 +524,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
     }
     clearInterval(tick2);
     const parsed = parseReply(reply);
-    renderReview(card, content, ranges, parsed, storyDateFrom(c.chat) || parsed.storyDate, block, elapsed(), reply, { key: plan.key, appliedTo: log.lines.length, newLines }, { edited });
+    await renderReview(card, content, ranges, parsed, storyDateFrom(c.chat) || parsed.storyDate, block, elapsed, reply, { key: plan.key, appliedTo: log.lines.length, newLines }, { edited, status, counter, signal, s });
 }
 
 function logDetails(lines) {
@@ -560,6 +571,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
         }), {
             signal,
             reasoning: s.updateThinking,
+            model: s.updateModel,
             onProgress: ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): tightening… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
             onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
         });
@@ -572,10 +584,40 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
     clearInterval(tick);
     const parsed = parseReply(reply);
     for (const u of parsed.updates) u.text = stripNewMarks(u.text);
-    renderReview(card, content, ranges, parsed, '', block, elapsed(), reply, null, { tighten: true, original: original ?? content, edited });
+    await renderReview(card, content, ranges, parsed, '', block, elapsed, reply, null, { tighten: true, original: original ?? content, edited, status, counter, signal, s });
 }
 
-function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo, opts = {}) {
+/** Runs the check pass over the proposed sections and attaches what it finds to them. */
+async function checkDraft(card, content, items, logLines, opts) {
+    const { s, status, counter, signal } = opts;
+    if (!s?.checkDrafts || !items.length) return { ran: false };
+    const c = ctx();
+    status?.text(`${card.title} (${counter}): checking the draft…`);
+    try {
+        const reply = await sendWithRetry(s, checkSystemPrompt(c.name1, { tighten: !!opts.tighten }), checkUserPrompt({
+            card: content, title: card.title, items, log: logLines,
+        }), { signal, reasoning: s.checkThinking });
+        const found = parseCheck(reply);
+        if (found === null) return { ran: true, failed: 'The check reply could not be read.', raw: reply };
+        const general = [];
+        for (const f of found) {
+            const target = items.find(it => it.title.toUpperCase() === f.section.toUpperCase())
+                || items.find(it => f.section && it.title.toUpperCase().includes(f.section.toUpperCase()));
+            if (target) (target.found ||= []).push(f);
+            else general.push(f);
+        }
+        return { ran: true, general, raw: reply };
+    } catch (err) {
+        if (signal?.aborted) throw err;
+        console.error(LOG, err);
+        return { ran: true, failed: err?.message || String(err) };
+    }
+}
+
+const FOUND_LABEL = { lost: 'Lost', unsupported: 'Not in the log', wrong: 'Wrong', twice: 'Said twice' };
+
+async function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo, opts = {}) {
+    const tookText = () => (typeof took === 'function' ? took() : took);
     const lines = content.split(/\r?\n/);
     const items = [];
     const unplaced = [];
@@ -594,7 +636,7 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
     const conflicts = (parsed.conflicts || []).length
         ? `<div class="cu-conflicts"><div class="cu-warn"><b>Lines that may no longer be true</b> (fix these yourself, in the lorebook):</div>${parsed.conflicts.map(x => `<div class="cu-warn">• ${esc(x)}</div>`).join('')}</div>`
         : '';
-    const head = cardHead(card, took) + editedNote(opts.edited) + conflicts;
+    let head = cardHead(card, tookText()) + editedNote(opts.edited) + conflicts;
     const tail = `${logInfo ? logDetails(logInfo.newLines) : ''}<details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
     if (!items.length && opts.tighten) {
         block.html(`${head}<div class="cu-muted">${parsed.none ? 'Nothing to cut.' : 'No usable changes in the reply.'}${unplaced.length ? ` Could not place: ${esc(unplaced.join(', '))}.` : ''}</div>${tail}`);
@@ -621,6 +663,29 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
         }
     }
 
+    // A second look: what went missing, what isn't backed by the log, what is now said twice.
+    let check = { ran: false };
+    try {
+        check = await checkDraft(card, content, items, logInfo?.newLines || [], opts);
+    } catch {
+        block.html(`${cardHead(card)}<div class="cu-warn">Cancelled.</div>`);
+        return;
+    }
+    for (const it of items) {
+        if ((it.found || []).some(f => f.kind !== 'twice')) it.accept = false;
+    }
+    const names = [...(card.names || []), ...(ctx().name1 ? [ctx().name1] : [])];
+    const computeRepeats = () => {
+        if (opts.tighten) return;
+        const newCard = applyReplacements(content, items.map(it => ({ start: it.range.start, end: it.range.end, body: it.newBody })));
+        for (const it of items) {
+            const added = lineDiff(it.oldBody, it.newBody).filter(d => d.type === 'add' && d.line.trim()).map(d => d.line);
+            it.repeats = findRepeats(newCard, added, names);
+        }
+    };
+    computeRepeats();
+    head = cardHead(card, tookText()) + editedNote(opts.edited) + conflicts;
+
     const canon = opts.tighten ? null : sectionRanges(content).find(r => r.kind === 'canon' && !r.inline);
     let canonItem = null;
     if (canon && storyDate) {
@@ -638,12 +703,22 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
         const b = approxTokens(after.length);
         return `<div class="cu-muted">Card size: ≈${a.toLocaleString()} → ≈${b.toLocaleString()} tokens with the ticked sections${limit ? ` (limit ${limit.toLocaleString()})` : ''}.</div>`;
     };
+    const checkLine = !check.ran ? ''
+        : check.failed ? `<div class="cu-warn">The check pass failed (${esc(check.failed)}), so read every section carefully.</div>`
+            : (() => {
+                const n = items.reduce((a, it) => a + (it.found || []).length, 0) + (check.general || []).length;
+                const general = (check.general || []).map(f => `<div class="cu-warn">${esc(FOUND_LABEL[f.kind])}${f.section ? ` (${esc(f.section)})` : ''}: ${esc(f.text.slice(0, 300))}</div>`).join('');
+                return `<div class="${n ? 'cu-warn' : 'cu-ok'}">Check pass: ${n ? `${n} problem${n === 1 ? '' : 's'} found. Sections with something lost, unsupported or wrong come unticked.` : 'no problems found.'}</div>${general}`;
+            })();
+    const checkTail = check.raw ? `<details><summary>Check reply</summary><pre class="cu-pre">${esc(check.raw)}</pre></details>` : '';
     const render = () => {
-        let html = `${head}<div class="cu-size">${sizeLine()}</div>`;
+        let html = `${head}${checkLine}<div class="cu-size">${sizeLine()}</div>`;
         if (unplaced.length) html += `<div class="cu-warn">Could not place: ${esc(unplaced.join(', '))}.</div>`;
         all.forEach((it, i) => {
             const warnings = it.kind === 'canon' ? [] : checkUpdate(it.kind, it.oldBody, it.newBody);
             if (it.lost?.length) warnings.unshift(`Changes ${it.lost.length} line${it.lost.length === 1 ? '' : 's'} from the original card, which Tighten should leave alone: "${it.lost[0].slice(0, 80)}${it.lost[0].length > 80 ? '…' : ''}"`);
+            for (const f of it.found || []) warnings.unshift(`${it.editedAfterCheck ? '(checked before your edit) ' : ''}${FOUND_LABEL[f.kind]}: ${f.text.slice(0, 300)}`);
+            for (const r of it.repeats || []) warnings.push(`Much like a line in ${r.where}: "${r.other.slice(0, 120)}${r.other.length > 120 ? '…' : ''}"`);
             html += `<div class="cu-item">
                 <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}><b>${esc(it.title)}</b></label>
                 ${it.reason ? `<div class="cu-muted">${esc(it.reason)}</div>` : ''}
@@ -652,7 +727,7 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
                 <details><summary>Edit before saving</summary><textarea class="text_pole cu-edit" data-edit="${i}" rows="10">${esc(it.newBody)}</textarea></details>
             </div>`;
         });
-        html += `<div class="cu-row cu-buttons"><div class="menu_button cu-save">Save ticked sections</div></div>${tail}`;
+        html += `<div class="cu-row cu-buttons"><div class="menu_button cu-save">Save ticked sections</div></div>${tail}${checkTail}`;
         block.html(html);
         block.find('[data-accept]').on('change', function () {
             all[Number(this.dataset.accept)].accept = this.checked;
@@ -661,7 +736,9 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
         block.find('[data-edit]').on('change', function () {
             const it = all[Number(this.dataset.edit)];
             it.newBody = this.value.replace(/\s+$/, '');
+            if (it.found?.length) it.editedAfterCheck = true;
             if (opts.tighten) it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original);
+            computeRepeats();
             render();
         });
         block.find('.cu-save').on('click', () => saveReview(card, content, all, storyDate, block, logInfo));
@@ -788,7 +865,12 @@ function settingsHtml() {
           <select id="cu_think_log" class="text_pole">${thinkingOptions()}</select>
           <label for="cu_think_update" title="Sent to OpenRouter as its reasoning setting.">Thinking while updating the card</label>
           <select id="cu_think_update" class="text_pole">${thinkingOptions()}</select>
+          <label for="cu_think_check" title="The check pass looks for lost facts, unsupported lines and repeats.">Thinking while checking a draft</label>
+          <select id="cu_think_check" class="text_pole">${thinkingOptions()}</select>
         </div>
+        <label for="cu_update_model">Model for updating and tightening (empty = same as above)</label>
+        <input id="cu_update_model" class="text_pole" type="text" placeholder="z-ai/glm-5.3">
+        <label class="checkbox_label"><input type="checkbox" id="cu_check"><span>Check each draft (one more request per card)</span></label>
         <div class="cu-row cu-buttons">
           <div id="cu_copy_sc" class="menu_button">Copy from Summaryception</div>
           <div id="cu_test" class="menu_button">Test connection</div>
@@ -854,6 +936,9 @@ function bindSettings() {
     $('#cu_max').on('input', function () { s.maxTokens = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_think_log').val(s.logThinking).on('change', function () { s.logThinking = this.value; save(); });
     $('#cu_think_update').val(s.updateThinking).on('change', function () { s.updateThinking = this.value; save(); });
+    $('#cu_think_check').val(s.checkThinking).on('change', function () { s.checkThinking = this.value; save(); });
+    $('#cu_update_model').val(s.updateModel).on('input', function () { s.updateModel = this.value.trim(); save(); });
+    $('#cu_check').prop('checked', !!s.checkDrafts).on('change', function () { s.checkDrafts = !!this.checked; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
     $('#cu_limit').val(s.cardLimit).on('input', function () { s.cardLimit = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });

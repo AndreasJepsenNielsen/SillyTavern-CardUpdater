@@ -368,3 +368,53 @@ test('0.4 reply: conflicts are read, [check:] and very long lines are flagged', 
     const long = U.checkUpdate('relationships', 'a', `a\n- ${'word '.repeat(80)}`);
     assert.ok(long.some(x => x.includes('over 70 words')));
 });
+
+test('0.5: strict homes and edit-not-rewrite are in the update rules', () => {
+    const sys = U.systemPrompt('Leon');
+    assert.ok(sys.includes('Anything involving Leon, even when other people were there too: only in their entry for Leon'));
+    assert.ok(sys.includes('HISTORY only gets life changes'));
+    assert.ok(sys.includes("Edit lines, don't rewrite them"));
+});
+
+test('0.5: check replies are read; nothing readable is null', () => {
+    const r = U.parseCheck('<think>x</think><lost section="RELATIONSHIPS">the part where he doesn\'t ask her to be anything</lost>\n<unsupported section="RELATIONSHIPS">Ellis checks the counters</unsupported>\n<twice section="HISTORY">she had sex with Leon -> RELATIONSHIPS / LEON</twice>');
+    assert.deepEqual(r.map(x => x.kind + ':' + x.section), ['lost:RELATIONSHIPS', 'unsupported:RELATIONSHIPS', 'twice:HISTORY']);
+    assert.deepEqual(U.parseCheck('<ok/>'), []);
+    assert.equal(U.parseCheck('I looked and it seems fine.'), null);
+    assert.ok(U.checkSystemPrompt('Leon').includes('belongs only in their entry for Leon'));
+    assert.ok(U.checkSystemPrompt('Leon', { tighten: true }).includes('now nowhere in the card'));
+    const up = U.checkUserPrompt({ card: 'C', title: 'Jules', items: [{ title: 'HISTORY', oldBody: 'a', newBody: 'b' }], log: ['- x'] });
+    assert.ok(up.includes('<section heading="HISTORY">\n<old>\na\n</old>\n<new>\nb\n</new>\n</section>') && up.includes('<log>\n- x\n</log>'));
+});
+
+test('0.5: repeats across sections are found, with where the other copy is', () => {
+    const card = `HISTORY
+- Day 7 - Friday 23 May: she had sex with Leon in her kitchen; Leon delayed Ellis at the elevator while she cleaned.
+
+KNOWLEDGE
+- Knows the desk man told Ellis about Leon shoving past the marshal.
+
+RELATIONSHIPS
+
+LEON (neighbor)
+- Now: her lover since Day 7.
+- Shared history:
+  - Day 7, afternoon: they had sex in her kitchen; Leon delayed Ellis at the elevator while she cleaned up.
+
+ELLIS
+- Wants: to keep him.`;
+    const reps = U.findRepeats(card, ['- Day 7 - Friday 23 May: she had sex with Leon in her kitchen; Leon delayed Ellis at the elevator while she cleaned.'], ['Jules', 'Leon']);
+    assert.equal(reps.length, 1);
+    assert.equal(reps[0].where, 'RELATIONSHIPS / LEON');
+    assert.deepEqual(U.findRepeats(card, ['- Wants: to keep him.'], []), [], 'short lines are not compared');
+    const labels = U.lineLabels(card);
+    assert.equal(labels[1], 'HISTORY');
+    assert.equal(labels[14], 'RELATIONSHIPS / ELLIS');
+});
+
+test('0.5: the long-line warning ignores an existing long line that only got a sentence added', () => {
+    const old = '- ' + 'word '.repeat(75).trim() + '.';
+    const appended = old.replace(/\.$/, '') + '. Fridays he can run late.';
+    assert.deepEqual(U.checkUpdate('ordinary', old, appended).filter(w => w.includes('70 words')), []);
+    assert.equal(U.checkUpdate('ordinary', 'short', '- ' + 'word '.repeat(80)).filter(w => w.includes('70 words')).length, 1);
+});

@@ -121,14 +121,15 @@ export function reasoningField(level) {
     }
 }
 
-async function sendDirect(s, system, user, { signal, onProgress, maxTokens, reasoning } = {}) {
+async function sendDirect(s, system, user, { signal, onProgress, maxTokens, reasoning, model } = {}) {
     const endpoint = completionsUrl(s.apiUrl);
     if (!endpoint) throw new Error('Set the endpoint URL in Card Updater settings.');
-    if (!s.apiModel) throw new Error('Set the model name in Card Updater settings.');
+    const modelName = String(model || s.apiModel || '').trim();
+    if (!modelName) throw new Error('Set the model name in Card Updater settings.');
     const headers = { 'Content-Type': 'application/json' };
     if (s.apiKey) headers.Authorization = `Bearer ${s.apiKey}`;
     const body = {
-        model: s.apiModel,
+        model: modelName,
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
         temperature: Number.isFinite(Number(s.temperature)) ? Number(s.temperature) : 0.8,
         stream: true,
@@ -154,7 +155,7 @@ async function sendDirect(s, system, user, { signal, onProgress, maxTokens, reas
         const text = await response.text().catch(() => '');
         if (response.status === 401) throw new Error('The endpoint answered 401 Unauthorized. Check the API key.');
         if (response.status === 400 && thinking?.enabled === false && /reasoning[\s\S]{0,80}(mandatory|required|cannot be disabled)/i.test(text)) {
-            throw new ThinkingRequiredError(`${s.apiModel} can't have thinking turned off.`);
+            throw new ThinkingRequiredError(`${modelName} can't have thinking turned off.`);
         }
         throw new Error(`The endpoint answered ${response.status}: ${text.slice(0, 300)}`);
     }
