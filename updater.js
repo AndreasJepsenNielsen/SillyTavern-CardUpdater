@@ -257,7 +257,7 @@ LIST ONLY
 - Everything between ${name} and ${u}.
 
 LEAVE OUT
-- Anything ${name} did not see, hear or get told. Other characters' scenes without ${name} are not part of ${name}'s log.
+- Anything ${name} did not see, hear or get told. Other characters' scenes without ${name} are not part of ${name}'s log. Leave such events out completely; don't list them with a note that ${name} missed them.
 - Passing moods, small talk and routine that changes nothing.
 
 FORMAT
