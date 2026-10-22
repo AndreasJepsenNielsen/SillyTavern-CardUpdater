@@ -299,7 +299,8 @@ Each fact lives in one section, its home. Before you write a fact, find every pl
 - What they fear or resent: the fear section, not PERSONALITY.
 - Where they stand in a group: STANDING.
 - Where things stand now (who they live with, work for, are with): IDENTITY, or the Now line of that person's entry.
-- Never add a line the card already says somewhere else.`;
+- Never add a line the card already says somewhere else.
+- When you change one line of a relationship entry, read the entry's other lines (Now, Wants, Hides, Speech, As it grows) and change any that no longer agree with it.`;
 }
 
 /** What survives when lines are condensed, in order; what goes first. */
@@ -325,7 +326,8 @@ const CHECKS = `NAMES AND CONTRADICTIONS
 
 const KEEP_IT_SHORT = `KEEP IT SHORT AND PLAIN
 The roleplay model reads the whole card on every turn, so every line costs on every reply, and it copies the way the card is written.
-- One event per line. A day with several events gets several short dated lines, never one long line.
+- One event per line. A day with several events gets several short dated lines, never one long line. This wins over copying the card: if older lines in a list are long paragraphs, new lines are still one event each.
+- The date is enough. Leave out clock times unless the time itself matters (a deadline, a near miss).
 - Each line is one plain sentence: when, who did what, to whom. Write it so someone who never read the scene understands it: full words, no shorthand, no half-quotes, no phrase that only makes sense if you remember the scene. Quote words only when the exact words matter, and then quote the whole sentence.
 - Write like the rest of the card: flat facts. No literary turns, no lines that land, no summing up, no clothes, rooms, weather or other colour.
 - Only events where this character acted, or that changed what they do, want or know from now on. Leave out what happened to the people around them (someone's car, someone else's news) unless it changed something for this character. A scene that changed nothing for them gets no line.

@@ -333,6 +333,7 @@ test('prompts: say-it-once, keep-it-short and the size note', () => {
     const sys = U.systemPrompt('Leon');
     assert.ok(sys.includes('SAY IT ONCE') && sys.includes('KEEP IT SHORT AND PLAIN'));
     assert.ok(sys.includes('One event per line') && sys.includes('about five'));
+    assert.ok(sys.includes('This wins over copying the card') && sys.includes('Leave out clock times') && sys.includes('As it grows) and change any that no longer agree'));
     assert.ok(U.tightenSystemPrompt('Leon').includes('Split a [new] line that crams several events'));
     assert.ok(U.tightenSystemPrompt('Leon').includes('Only lines marked [new]'));
     assert.match(U.sizeNote(8012, 5000), /about 8,012 tokens\. LIMIT: 5,000 tokens\. The card is already over the limit/);
