@@ -309,3 +309,37 @@ test('connection: a model that refuses thinking off is reported as such', async 
         globalThis.fetch = realFetch;
     }
 });
+
+test('tighten: only lines added in play are marked, headings and other sections are not', () => {
+    const original = 'IDENTITY\n17. Lives with her mother.\n\nHISTORY\nAge 13: her dad dies.\n\nLIMITS\nWon\'t sell to Gia.';
+    const updated = 'IDENTITY\n17. Lives with her mother.\nNow sleeps on Lexi\'s couch.\n\nHISTORY\nAge 13: her dad dies.\nDay 3 - Monday 14 October: wakes at Lexi\'s.\nDay 3 - Monday 14 October: wakes on Lexi\'s couch, texts Leon.\n\nLIMITS\nWon\'t sell to Gia.\nAdded limit outside the ticked sections.';
+    const ranges = U.updatableRanges(updated, new Set(['identity', 'history']));
+    const m = U.markNewLines(updated, original, ranges);
+    assert.equal(m.newLines, 3);
+    assert.ok(m.text.includes('[new] Now sleeps on Lexi\'s couch.'));
+    assert.ok(m.text.includes('\n17. Lives with her mother.\n'), 'original line unmarked');
+    assert.ok(m.text.includes('\nAdded limit outside the ticked sections.'), 'sections not ticked are left unmarked');
+    assert.ok(!m.text.includes('[new] HISTORY'));
+    assert.equal(U.stripNewMarks('[new] a\n  [new] - b\nc'), 'a\n  - b\nc');
+});
+
+test('tighten: flags changes to lines from the original card', () => {
+    const original = 'HISTORY\nAge 13: her dad dies.\nAge 16: overdoses.';
+    assert.deepEqual(U.lostOriginalLines('Age 13: her dad dies.\nAge 16: overdoses.\nDay 3: x.\nDay 3: x again.', 'Age 13: her dad dies.\nAge 16: overdoses.\nDay 3: x.', original), []);
+    assert.deepEqual(U.lostOriginalLines('Age 13: her dad dies.\nAge 16: overdoses.\nDay 3: x.', 'Age 13: dad dies.\nAge 16: overdoses.', original), ['Age 13: her dad dies.']);
+});
+
+test('prompts: say-it-once, keep-it-short and the size note', () => {
+    const sys = U.systemPrompt('Leon');
+    assert.ok(sys.includes('SAY IT ONCE') && sys.includes('KEEP IT SHORT AND PLAIN'));
+    assert.ok(sys.includes('One event per line') && sys.includes('about five'));
+    assert.ok(U.tightenSystemPrompt('Leon').includes('Split a [new] line that crams several events'));
+    assert.ok(U.tightenSystemPrompt('Leon').includes('Only lines marked [new]'));
+    assert.match(U.sizeNote(8012, 5000), /about 8,012 tokens\. LIMIT: 5,000 tokens\. The card is already over the limit/);
+    assert.match(U.sizeNote(3000, 5000), /must not take the card over the limit/);
+    assert.equal(U.sizeNote(3000, 0), 'CARD SIZE: about 3,000 tokens.');
+    const up = U.userPrompt({ card: 'X', title: 'Jules', sections: ['HISTORY'], log: ['- a'], tokens: 8000, limit: 5000 });
+    assert.ok(up.includes('CARD SIZE: about 8,000 tokens. LIMIT: 5,000 tokens.'));
+    const tp = U.tightenUserPrompt({ card: '[new] x', title: 'Jules', sections: ['HISTORY', 'RELATIONSHIPS'], tokens: 8000, limit: 5000 });
+    assert.ok(tp.includes('SECTIONS YOU MAY TIGHTEN: HISTORY, RELATIONSHIPS') && tp.includes('LIMIT: 5,000'));
+});

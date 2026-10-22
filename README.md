@@ -29,7 +29,8 @@ Pick one under **Connection source**:
 None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high.
 
 **Thinking** (direct connection, sent as OpenRouter's reasoning setting): off by default while reading the story,
-since that step only lists events, and the model's default while updating the card. Temperature defaults to 0.8;
+since that step only lists events, and Medium while updating or tightening a card. A model that can't think "off"
+(OpenRouter answers "Reasoning is mandatory") gets Low instead, remembered per model. Temperature defaults to 0.8;
 GLM's reasoning models get stuck in loops more easily at low temperatures.
 
 **Loop guard**: if the model's thinking or reply starts repeating itself, the request is stopped right away and
@@ -83,6 +84,19 @@ themselves (also the hidden ones) or the summary pieces that cover them.
 
 Warnings in yellow: a personality change, history lines removed or rewritten, a relationship entry or sub-section
 dropped, or words that count from a day.
+
+## Size and Tighten
+
+Updates are told the card's size and the **Card size limit** (5,000 tokens by default, the template's limit for a
+lead): an update may not take a card over it, and a card that is already over only gets what is essential. They
+also say each thing once (anything with your persona only in the entry for you, events in HISTORY, Knowledge only
+what isn't already an event) and write one event per line, as one plain sentence.
+
+**Tighten ticked cards** is for a card that has grown too long. It only works on lines that updates added: lines
+from the card as it was before its first update in this chat stay word for word. It cuts repeats across sections,
+splits crammed lines, rewrites shorthand as plain sentences and keeps each Shared history to the events that
+matter most. A change to an original line is flagged and left unticked. Each card's size is shown in the list,
+and the review shows the size before and after the ticked changes.
 
 ## Versions
 

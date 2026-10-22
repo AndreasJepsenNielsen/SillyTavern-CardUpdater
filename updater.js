@@ -286,6 +286,35 @@ export function parseLog(reply) {
 
 // ---------------------------------------------------------------- step 2: the card update
 
+/** Where each kind of fact lives, so the card says everything once. */
+function sayItOnce(u) {
+    return `SAY IT ONCE
+Each fact lives in one section. Another section that needs it points to it in a few words ("see HISTORY") or leaves it out.
+- Anything between this character and ${u}: only in their entry for ${u} under RELATIONSHIPS.
+- Events with other people: one line in HISTORY. That person's RELATIONSHIPS entry only gets a few words in Shared history when the event changed things between them.
+- What they found out: KNOWLEDGE, only when it is not already a HISTORY line.
+- Where things stand now (who they live with, work for, are with): IDENTITY, one short line each.
+- Before adding a line, check whether the card already says it. If it does, don't add it again.`;
+}
+
+const KEEP_IT_SHORT = `KEEP IT SHORT AND PLAIN
+The roleplay model reads the whole card on every turn, so every line costs on every reply, and it copies the way the card is written.
+- One event per line. A day with several events gets several short dated lines, never one long line.
+- Each line is one plain sentence: when, who did what, to whom. Write it so someone who never read the scene understands it: full words, no shorthand, no half-quotes, no phrase that only makes sense if you remember the scene. Quote words only when the exact words matter, and then quote the whole sentence.
+- Write like the rest of the card: flat facts. No literary turns, no lines that land, no summing up, no clothes, rooms, weather or other colour.
+- Only events where this character acted, or that changed what they do, want or know from now on. Leave out what happened to the people around them (someone's car, someone else's news) unless it changed something for this character. A scene that changed nothing for them gets no line.
+- Shared history in a RELATIONSHIPS entry holds only the few events that matter most between the two (about five), each its own short dated line.
+- When a new fact replaces an old one, change the old line instead of adding a new one.`;
+
+/** "CARD SIZE" line for the prompts. */
+export function sizeNote(tokens, limit) {
+    if (!limit) return `CARD SIZE: about ${tokens.toLocaleString('en-US')} tokens.`;
+    const over = tokens > limit;
+    return `CARD SIZE: about ${tokens.toLocaleString('en-US')} tokens. LIMIT: ${limit.toLocaleString('en-US')} tokens. ${over
+        ? 'The card is already over the limit: add only what is essential, as few and as short lines as possible.'
+        : 'Your changes must not take the card over the limit.'}`;
+}
+
 export function systemPrompt(userName) {
     const u = userName || 'the player character';
     return `You update one character card for a long-running roleplay so it matches what has happened in the story. The roleplay model reads this card on every turn and treats it as the truth about the character. You get the card and a dated log of what happened to the character since the card was last updated. The log already holds only what the character did, saw or was told. Only change what the log actually changes.
@@ -296,9 +325,14 @@ WHAT TO CHANGE
 - PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. When in doubt, leave PERSONALITY alone. If you do change it, change only the affected lines and say in the reason which events show it.
 - Everything between this character and ${u} goes in their entry for ${u} under RELATIONSHIPS (Wants, Hides, Speech, Shared history), not in HISTORY or KNOWLEDGE. If that entry says they have not met ${u} and they now have, rewrite it as an entry for someone they know: Wants, Hides, a Speech line that says what they do when they talk to ${u} now (in front of whom, how close they stand, what they say first, what they do when they get nothing back), and Shared history.
 
+${sayItOnce(u)}
+
+${KEEP_IT_SHORT}
+
 HOW TO WRITE IT
 - Keep the card's own format exactly: the same headings, bullet style, field labels (Wants:, Hides:, Speech:, Shared history:, Now:) and line layout. Keep every line you are not changing exactly as it is, in its place.
-- HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Each new line is what happened, when, who was there and what was said or done. Write events, not what they meant. Add only events that matter to this character, not every log line.
+- HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Write events, not what they meant. Most log lines don't belong in the card at all.
+- Add to a Shared history only events that changed things between the two. Most days add nothing there.
 - KNOWLEDGE uses: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation." Only add what they learned in the story.
 - RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's first line says what the character does now ("Now: ..."). Add an entry for someone new only if they are now a lasting part of this character's life.
 - Dates: write the story's named day and date the way the log writes them (for example "Day 3 - Monday 14 October"). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead ("clean since Day 3 - Monday 14 October"). Spoken lines in quotes keep their own words.
@@ -318,15 +352,98 @@ Only update the sections listed under SECTIONS YOU MAY UPDATE. Leave out section
 At the very end, on its own line, write the newest story date in the log: <storydate>...</storydate>`;
 }
 
-export function userPrompt({ card, title, sections, log, trackers, storyDate }) {
+export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0 }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title}\n<card>\n${card}\n</card>`);
+    if (tokens) parts.push(sizeNote(tokens, limit));
     parts.push(`SECTIONS YOU MAY UPDATE: ${sections.join(', ')}`);
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN (the current situation; use them for what they know and where things stand, never copy a passing mood into the card):\n<trackers>\n${trackers}\n</trackers>`);
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
     parts.push(`Update the card for ${title}. Return only the <update> blocks (or <none/>) and the <storydate> line.`);
     return parts.join('\n\n');
+}
+
+// ---------------------------------------------------------------- tighten
+
+const NEW_MARK = '[new] ';
+
+/** Lines of the original card, trimmed, for telling original lines from lines added in play. */
+export function originalLineSet(original) {
+    return new Set(String(original ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean));
+}
+
+/**
+ * The card with every line that isn't in the original marked "[new] ", for the given ranges only.
+ * @returns {{text: string, newLines: number}}
+ */
+export function markNewLines(content, original, ranges) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const orig = originalLineSet(original);
+    const inRange = new Set();
+    for (const r of ranges) for (let i = r.start + 1; i < r.end; i++) inRange.add(i);
+    let newLines = 0;
+    const out = lines.map((l, i) => {
+        if (!inRange.has(i) || !l.trim() || orig.has(l.trim()) || headingInfo(l)) return l;
+        newLines++;
+        return NEW_MARK + l;
+    });
+    return { text: out.join('\n'), newLines };
+}
+
+export function stripNewMarks(text) {
+    return String(text ?? '').split('\n').map(l => l.replace(/^(\s*)\[new\]\s?/i, '$1')).join('\n');
+}
+
+/** Lines of the original card that a proposed section body no longer holds word for word. */
+export function lostOriginalLines(oldBody, newBody, original) {
+    const orig = originalLineSet(original);
+    const kept = new Set(String(newBody ?? '').split('\n').map(l => l.trim()));
+    return String(oldBody ?? '').split('\n').map(l => l.trim()).filter(l => l && orig.has(l) && !kept.has(l));
+}
+
+export function tightenSystemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You tighten one character card for a long-running roleplay. Updates from play have made it long and repetitive. Make it shorter without losing any fact.
+
+WHAT YOU MAY CHANGE
+- Only lines marked [new]. Those were added by updates during play.
+- Lines without the mark come from the original card. Keep each of them exactly as it is, in its place, even when you'd write it differently.
+- Never remove a heading or a section, and never touch a section that isn't listed under SECTIONS YOU MAY TIGHTEN.
+
+${sayItOnce(u)}
+
+${KEEP_IT_SHORT}
+
+HOW TO TIGHTEN
+- Remove a [new] line when the card already states the same fact somewhere else; leave a few words pointing to it only where the reader would otherwise miss it.
+- Shorten [new] lines to one plain sentence. Keep dates and who was there.
+- Merge [new] lines that say the same thing.
+- Split a [new] line that crams several events into one line, then keep only the events that matter.
+- Rewrite [new] lines that use shorthand or literary phrasing as plain sentences.
+- If a Shared history holds more than about five events, cut or merge the least important [new] lines.
+- Never drop a fact that matters to how the character acts or what they know just to save space.
+- Keep the card's format: headings, bullet style, field labels.
+
+WHAT TO RETURN
+For every section you change, return the whole new body of that section (everything under its heading, without the heading line, and without the [new] marks), including every line you kept:
+<update>
+<heading>THE SECTION HEADING EXACTLY AS IN THE CARD</heading>
+<reason>One short line: what was cut or merged.</reason>
+<text>
+the whole new section body
+</text>
+</update>
+If nothing can be cut, return only <none/>.`;
+}
+
+export function tightenUserPrompt({ card, title, sections, tokens, limit }) {
+    return [
+        `CHARACTER CARD: ${title} (lines marked [new] were added in play)\n<card>\n${card}\n</card>`,
+        `SECTIONS YOU MAY TIGHTEN: ${sections.join(', ')}`,
+        sizeNote(tokens, limit),
+        `Tighten the card for ${title}. Return only the <update> blocks, or <none/>.`,
+    ].join('\n\n');
 }
 
 // ---------------------------------------------------------------- the reply

@@ -6,7 +6,7 @@ import { looksLikeCard, nameVariants, titleCase, mentionsAny } from './cardparse
 import {
     UPDATABLE, updatableRanges, sectionRanges, rangeBody, applyReplacements, canonPointBody, storyItems, filterForCharacter,
     chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
-    matchRange, lineDiff, checkUpdate,
+    matchRange, lineDiff, checkUpdate, markNewLines, stripNewMarks, lostOriginalLines, tightenSystemPrompt, tightenUserPrompt,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
@@ -24,7 +24,8 @@ const DEFAULTS = Object.freeze({
     maxTokens: 32000,
     temperature: 0.8,
     logThinking: 'off', // reading the story into the log is listing, not reasoning
-    updateThinking: 'default',
+    updateThinking: 'medium',
+    cardLimit: 5000, // tokens; the template's limit for a lead
     profileId: '',
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
     sections: Object.fromEntries(UPDATABLE.map(([k]) => [k, true])),
@@ -44,11 +45,16 @@ function settings() {
         if (s[k] === undefined) s[k] = typeof v === 'object' ? structuredClone(v) : v;
     }
     for (const [k] of UPDATABLE) if (s.sections[k] === undefined) s.sections[k] = true;
-    if (firstLoad) s.settingsVersion = 2;
+    if (firstLoad) s.settingsVersion = 3;
     if ((s.settingsVersion || 1) < 2) {
         // 0.5 was the first default; GLM's reasoning models loop more easily that low.
         if (s.temperature === 0.5) s.temperature = 0.8;
         s.settingsVersion = 2;
+    }
+    if (s.settingsVersion < 3) {
+        // The model's default thinking ran long on the card update.
+        if (s.updateThinking === 'default') s.updateThinking = 'medium';
+        s.settingsVersion = 3;
     }
     return s;
 }
@@ -105,7 +111,7 @@ async function loadCards(worlds) {
             if (!e || typeof e.content !== 'string' || !looksLikeCard(e.content)) continue;
             const names = cardNames(e);
             const title = String(e.comment || (names[0] ? titleCase(names[0]) : `Entry ${uid}`));
-            cards.push({ world, uid: String(uid), title, names, disabled: !!e.disable });
+            cards.push({ world, uid: String(uid), title, names, disabled: !!e.disable, tokens: approxTokens(e.content.length) });
         }
     }
     return cards;
@@ -124,7 +130,16 @@ function chatStore() {
     if (!md[MODULE] || typeof md[MODULE] !== 'object') md[MODULE] = {};
     if (!md[MODULE].versions) md[MODULE].versions = {};
     if (!md[MODULE].logs) md[MODULE].logs = {};
+    if (!md[MODULE].originals) md[MODULE].originals = {};
     return md[MODULE];
+}
+
+/** The card as it was before its first update in this chat, for telling original lines from lines added in play. */
+function getOriginal(key) {
+    const st = chatStore();
+    if (typeof st.originals[key] === 'string') return st.originals[key];
+    const versions = st.versions[key];
+    return versions?.length ? versions[versions.length - 1].content : null;
 }
 
 function versionStore() {
@@ -140,6 +155,8 @@ function getLog(key) {
 async function keepVersion(card, content, storyDate) {
     const store = versionStore();
     const key = `${card.world}|${card.uid}`;
+    const st = chatStore();
+    if (typeof st.originals[key] !== 'string') st.originals[key] = getOriginal(key) ?? content;
     const list = store[key] || [];
     list.unshift({ title: card.title, world: card.world, uid: card.uid, at: new Date().toISOString(), message: ctx().chat?.length ?? 0, storyDate: storyDate || '', content });
     store[key] = list.slice(0, MAX_VERSIONS);
@@ -270,7 +287,7 @@ async function openUpdater() {
         <div class="cu-chips">${sectionChips(s)}</div>
         <label class="checkbox_label cu-rebuild"><input type="checkbox" class="cu-rebuild-box"><span>Rebuild the ticked cards' logs from the start of the story</span></label>
         <div class="cu-plan cu-muted"></div>
-        <div class="cu-row cu-buttons"><div class="menu_button cu-draft">Draft updates</div><div class="menu_button cu-stop" style="display:none">Stop after this card</div></div>
+        <div class="cu-row cu-buttons"><div class="menu_button cu-draft">Draft updates</div><div class="menu_button cu-tighten" title="Cut repeats and shorten lines that updates added. Lines from the original card are left alone.">Tighten ticked cards</div><div class="menu_button cu-stop" style="display:none">Stop after this card</div></div>
         <div class="cu-status cu-muted"></div>
         <div class="cu-results"></div>
     </div>`);
@@ -315,7 +332,7 @@ async function openUpdater() {
                 const log = getLog(`${card.world}|${card.uid}`);
                 const seen = card.mentions ? `in ${card.mentions} line${card.mentions === 1 ? '' : 's'} of the story` : 'not in the story';
                 const logged = log && Number.isInteger(log.coveredTo) ? ` · logged up to message #${log.coveredTo}` : '';
-                html += `<label class="checkbox_label cu-card"><input type="checkbox" data-card="${i}"><span>${esc(card.title)}</span><span class="cu-muted">${seen}${logged}${card.disabled ? ' · disabled entry' : ''}</span></label>`;
+                html += `<label class="checkbox_label cu-card"><input type="checkbox" data-card="${i}"><span>${esc(card.title)}</span><span class="cu-muted">≈${card.tokens.toLocaleString()} tokens${card.tokens > (Number(s.cardLimit) || Infinity) ? ' (over the limit)' : ''} · ${seen}${logged}${card.disabled ? ' · disabled entry' : ''}</span></label>`;
             }
         }
         root.find('.cu-cards').html(html);
@@ -349,7 +366,7 @@ async function openUpdater() {
         stopAfter = true;
         root.find('.cu-status').text('Stopping after this card…');
     });
-    root.find('.cu-draft').on('click', async () => {
+    const runAll = async (tighten) => {
         if (running) return;
         const chosen = chosenCards();
         const kinds = UPDATABLE.filter(([k]) => s.sections[k]).map(([k]) => k);
@@ -357,21 +374,25 @@ async function openUpdater() {
         if (!kinds.length) return toastr.info('Tick at least one section.', 'Card Updater');
         running = true;
         stopAfter = false;
-        root.find('.cu-draft').addClass('disabled');
+        root.find('.cu-draft, .cu-tighten').addClass('disabled');
         root.find('.cu-stop').show();
         const doRebuild = rebuild();
         for (let i = 0; i < chosen.length; i++) {
             if (stopAfter || abort.signal.aborted) break;
             const block = $('<div class="cu-result"></div>').appendTo(root.find('.cu-results'));
-            await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, `${i + 1}/${chosen.length}`);
+            const counter = `${i + 1}/${chosen.length}`;
+            if (tighten) await runTighten(chosen[i], kinds, s, block, root.find('.cu-status'), abort.signal, counter);
+            else await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, counter);
         }
         running = false;
-        root.find('.cu-draft').removeClass('disabled');
+        root.find('.cu-draft, .cu-tighten').removeClass('disabled');
         root.find('.cu-stop').hide();
         root.find('.cu-rebuild-box').prop('checked', false);
         renderPlan();
         root.find('.cu-status').text(stopAfter ? 'Stopped.' : 'Done. Review each card below and save what you want to keep.');
-    });
+    };
+    root.find('.cu-draft').on('click', () => runAll(false));
+    root.find('.cu-tighten').on('click', () => runAll(true));
 
     const popup = new c.Popup(root, c.POPUP_TYPE.TEXT, '', { wide: true, large: true, okButton: 'Close', allowVerticalScrolling: true, leftAlign: true });
     await popup.show();
@@ -447,6 +468,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
         reply = await sendWithRetry(s, systemPrompt(c.name1), userPrompt({
             card: content, title: card.title, sections: ranges.map(r => r.title), log: newLines,
             trackers: trackerLines(c.chat, card.names), storyDate: storyDateFrom(c.chat),
+            tokens: approxTokens(content.length), limit: Number(s.cardLimit) || 0,
         }), {
             signal,
             reasoning: s.updateThinking,
@@ -476,7 +498,53 @@ function diffHtml(oldBody, newBody) {
     }).join('');
 }
 
-function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo) {
+async function runTighten(card, kinds, s, block, status, signal, counter) {
+    const c = ctx();
+    const started = Date.now();
+    const elapsed = () => `${Math.round((Date.now() - started) / 1000)} s`;
+    const content = await readEntry(card.world, card.uid);
+    if (content === null) {
+        block.html(`${cardHead(card)}<div class="cu-warn">Entry not found.</div>`);
+        return;
+    }
+    const key = `${card.world}|${card.uid}`;
+    const original = getOriginal(key);
+    const ranges = updatableRanges(content, new Set(kinds));
+    if (original === null) {
+        block.html(`${cardHead(card)}<div class="cu-muted">This card hasn't been updated in this chat, so there are no added lines to tighten.</div>`);
+        return;
+    }
+    const marked = markNewLines(content, original, ranges);
+    if (!marked.newLines) {
+        block.html(`${cardHead(card)}<div class="cu-muted">The ticked sections have no lines added by updates, so there is nothing to tighten.</div>`);
+        return;
+    }
+    const tokens = approxTokens(content.length);
+    const tick = setInterval(() => status.text(`${card.title} (${counter}): tightening ${marked.newLines} added lines… ${elapsed()}`), 1000);
+    status.text(`${card.title} (${counter}): tightening ${marked.newLines} added lines…`);
+    let reply;
+    try {
+        reply = await sendWithRetry(s, tightenSystemPrompt(c.name1), tightenUserPrompt({
+            card: marked.text, title: card.title, sections: ranges.map(r => r.title), tokens, limit: Number(s.cardLimit) || 0,
+        }), {
+            signal,
+            reasoning: s.updateThinking,
+            onProgress: ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): tightening… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
+            onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
+        });
+    } catch (err) {
+        clearInterval(tick);
+        console.error(LOG, err);
+        block.html(`${cardHead(card, elapsed())}${errorHtml('Tightening failed', err, signal)}`);
+        return;
+    }
+    clearInterval(tick);
+    const parsed = parseReply(reply);
+    for (const u of parsed.updates) u.text = stripNewMarks(u.text);
+    renderReview(card, content, ranges, parsed, '', block, elapsed(), reply, null, { tighten: true, original });
+}
+
+function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo, opts = {}) {
     const lines = content.split(/\r?\n/);
     const items = [];
     const unplaced = [];
@@ -493,7 +561,11 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
     }
 
     const head = cardHead(card, took);
-    const tail = `${logDetails(logInfo.newLines)}<details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
+    const tail = `${logInfo ? logDetails(logInfo.newLines) : ''}<details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
+    if (!items.length && opts.tighten) {
+        block.html(`${head}<div class="cu-muted">${parsed.none ? 'Nothing to cut.' : 'No usable changes in the reply.'}${unplaced.length ? ` Could not place: ${esc(unplaced.join(', '))}.` : ''}</div>${tail}`);
+        return;
+    }
     if (!items.length) {
         const why = parsed.none ? 'Nothing in the log changes this card.' : 'No usable changes in the reply.';
         block.html(`${head}<div class="cu-muted">${why}${unplaced.length ? ` Could not place: ${esc(unplaced.join(', '))}.` : ''}</div>
@@ -507,7 +579,15 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
         return;
     }
 
-    const canon = sectionRanges(content).find(r => r.kind === 'canon' && !r.inline);
+    // Tighten may only touch lines added in play; a change to an original line is flagged and left unticked.
+    if (opts.tighten) {
+        for (const it of items) {
+            it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original);
+            if (it.lost.length) it.accept = false;
+        }
+    }
+
+    const canon = opts.tighten ? null : sectionRanges(content).find(r => r.kind === 'canon' && !r.inline);
     let canonItem = null;
     if (canon && storyDate) {
         const oldBody = rangeBody(lines, canon);
@@ -516,11 +596,20 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
     }
     const all = canonItem ? [...items, canonItem] : items;
 
+    const sizeLine = () => {
+        const chosen = all.filter(it => it.accept);
+        const after = chosen.length ? applyReplacements(content, chosen.map(it => ({ start: it.range.start, end: it.range.end, body: it.newBody }))) : content;
+        const limit = Number(settings().cardLimit) || 0;
+        const a = approxTokens(content.length);
+        const b = approxTokens(after.length);
+        return `<div class="cu-muted">Card size: ≈${a.toLocaleString()} → ≈${b.toLocaleString()} tokens with the ticked sections${limit ? ` (limit ${limit.toLocaleString()})` : ''}.</div>`;
+    };
     const render = () => {
-        let html = head;
+        let html = `${head}<div class="cu-size">${sizeLine()}</div>`;
         if (unplaced.length) html += `<div class="cu-warn">Could not place: ${esc(unplaced.join(', '))}.</div>`;
         all.forEach((it, i) => {
             const warnings = it.kind === 'canon' ? [] : checkUpdate(it.kind, it.oldBody, it.newBody);
+            if (it.lost?.length) warnings.unshift(`Changes ${it.lost.length} line${it.lost.length === 1 ? '' : 's'} from the original card, which Tighten should leave alone: "${it.lost[0].slice(0, 80)}${it.lost[0].length > 80 ? '…' : ''}"`);
             html += `<div class="cu-item">
                 <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}><b>${esc(it.title)}</b></label>
                 ${it.reason ? `<div class="cu-muted">${esc(it.reason)}</div>` : ''}
@@ -531,9 +620,14 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
         });
         html += `<div class="cu-row cu-buttons"><div class="menu_button cu-save">Save ticked sections</div></div>${tail}`;
         block.html(html);
-        block.find('[data-accept]').on('change', function () { all[Number(this.dataset.accept)].accept = this.checked; });
+        block.find('[data-accept]').on('change', function () {
+            all[Number(this.dataset.accept)].accept = this.checked;
+            block.find('.cu-size').html(sizeLine());
+        });
         block.find('[data-edit]').on('change', function () {
-            all[Number(this.dataset.edit)].newBody = this.value.replace(/\s+$/, '');
+            const it = all[Number(this.dataset.edit)];
+            it.newBody = this.value.replace(/\s+$/, '');
+            if (opts.tighten) it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original);
             render();
         });
         block.find('.cu-save').on('click', () => saveReview(card, content, all, storyDate, block, logInfo));
@@ -543,7 +637,7 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
 
 async function saveReview(card, content, items, storyDate, block, logInfo) {
     const chosen = items.filter(it => it.accept);
-    if (!chosen.length || (chosen.length === 1 && chosen[0].kind === 'canon')) {
+    if (!chosen.length || chosen.every(it => it.kind === 'canon')) {
         toastr.info('Tick at least one section to save.', 'Card Updater');
         return;
     }
@@ -556,7 +650,7 @@ async function saveReview(card, content, items, storyDate, block, logInfo) {
         const updated = applyReplacements(content, chosen.map(it => ({ start: it.range.start, end: it.range.end, body: it.newBody })));
         await keepVersion(card, content, storyDate);
         await writeEntry(card.world, card.uid, updated);
-        const log = getLog(logInfo.key);
+        const log = logInfo ? getLog(logInfo.key) : null;
         if (log) {
             log.applied = Math.max(log.applied || 0, logInfo.appliedTo);
             await ctx().saveMetadata();
@@ -672,6 +766,8 @@ function settingsHtml() {
         <div class="cu-muted">Uses the chat's model and sampler settings, without your preset's prompts.</div>
       </div>
       <div class="cu-grid">
+        <label for="cu_limit" title="Updates are told to keep cards under this, and the window shows each card's size against it. 5000 is the template's limit for a lead.">Card size limit (tokens, 0 = none)</label>
+        <input id="cu_limit" class="text_pole" type="number" min="0" step="500">
         <label for="cu_first" title="Only for a chat with no Summaryception summary: how many of the newest messages a card's first run reads. 0 reads the whole chat.">First run without a summary: newest messages read (0 = all)</label>
         <input id="cu_first" class="text_pole" type="number" min="0" step="50">
       </div>
@@ -721,6 +817,7 @@ function bindSettings() {
     $('#cu_think_log').val(s.logThinking).on('change', function () { s.logThinking = this.value; save(); });
     $('#cu_think_update').val(s.updateThinking).on('change', function () { s.updateThinking = this.value; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
+    $('#cu_limit').val(s.cardLimit).on('input', function () { s.cardLimit = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });
 
     $('#cu_copy_sc').on('click', () => {
