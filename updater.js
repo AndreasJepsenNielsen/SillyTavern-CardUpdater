@@ -266,6 +266,7 @@ One line per event, starting with "- ", oldest first:
 Plain words, events not interpretation. Keep each line short.
 - When someone says something that changes how two people stand with each other, give their words, and give the other person's answer with it.
 - Name who did or said what exactly as the story says. If the story doesn't make clear who did something, write "unclear who" rather than guessing a name.
+- Keep who did what to whom exactly as the story has it, and name the act as the story describes it. Never turn one act into another (touching into sex, a kiss into more), and never merge two people's acts into one.
 If nothing in this part involves ${name}, reply with exactly: NONE`;
 }
 
@@ -320,6 +321,8 @@ Never soften, censor or drop explicit or sexual facts; keep them in the card's o
 /** How to handle names and contradictions; both end up as warnings in the review. */
 const CHECKS = `NAMES AND CONTRADICTIONS
 - Write a name for who did something only when the log or the card says it plainly. If you are not sure who did it, write [check: what is unclear] in its place instead of guessing.
+- Keep who did what to whom exactly as the log has it, and name each act as the log does. Never turn one act into another (touching into sex, a kiss into more), never swap who watched and who acted, and never merge two events into one. When the same event goes into two entries, both must say the same thing.
+- A Speech line says how this character talks to that person. What the other person says, thinks or calls them is not Speech; leave it out or put it in Shared history.
 - When the log shows the character saying or doing something that contradicts a line in the card (a trait, a belief, a fear, how they see someone), change that line if its section is one you may change (listed above). Otherwise report it, one per contradiction:
 <conflict>the card line, quoted -> what the story shows now, with the date</conflict>`;
 

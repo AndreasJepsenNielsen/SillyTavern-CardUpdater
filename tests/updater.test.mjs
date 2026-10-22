@@ -351,6 +351,8 @@ test('0.4 rules: keep order, names, contradictions, homes, explicit facts', () =
         assert.ok(sys.includes(part), part);
     }
     assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('write "unclear who" rather than guessing'));
+    assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('Never turn one act into another'));
+    assert.ok(sys.includes('never swap who watched and who acted') && sys.includes('A Speech line says how this character talks to that person'));
     assert.ok(U.tightenSystemPrompt('Leon').includes('Only lines marked [new]'));
     const withOriginal = U.tightenSystemPrompt('Leon', { original: true });
     assert.ok(withOriginal.includes('one line per period') && !withOriginal.includes('Only lines marked [new]'));
