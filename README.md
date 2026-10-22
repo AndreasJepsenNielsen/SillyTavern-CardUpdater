@@ -13,7 +13,8 @@ It works on lorebook entries written in the character card template (all-caps se
 2. Paste `https://github.com/AndreasJepsenNielsen/SillyTavern-CardUpdater` and install.
 3. Reload the page. **Card Updater** is in the right-hand column of the Extensions panel.
 
-Updates: Extensions → **Manage extensions** → the update button next to Card Updater.
+Updates: Extensions → **Manage extensions** → the update button next to Card Updater, then reload the page. The
+version number shows next to the name in the settings and in the update window, so you can see which one runs.
 
 ## Connection
 
@@ -73,6 +74,8 @@ Each card is done in two steps, so no single request is huge:
 The log is kept in the chat. Next time only the story after the last read is used, and only log lines that aren't
 in the card yet go to the update. If reading fails partway, nothing is added to the log, so the next run starts
 from the same place. **Rebuild the ticked cards' logs from the start of the story** starts a card over.
+**Update from the ticked cards' whole log again** is for a card you restored or edited by hand: the update uses
+every logged line, also the ones already marked as done, without reading the story again.
 
 Where the chat has been summarised, the first run uses the Summaryception summary; later runs read the messages
 themselves (also the hidden ones) or the summary pieces that cover them.
@@ -97,8 +100,8 @@ Warnings in yellow, about what the change itself adds (never about what the line
 - anything involving your persona added to HISTORY or KNOWLEDGE (unticked: it belongs in their entry for you);
 - a change outside the sections you ticked (unticked);
 - a clock time, or words that count from a day;
-- names or numbers a rewritten line no longer has ("No longer says: Ellis, Day 5");
-- a new line over 70 words, or a line that grows a lot;
+- what an edit cuts from its line ("Cuts from the line: …"), or names and numbers it no longer has;
+- a new line over 50 words, or a line that grows a lot;
 - a new line that is mostly the same words as another line of the card, with that line's closest sentence;
 - a line number that was off by one and was moved to the line it plainly fits.
 
@@ -110,6 +113,13 @@ the line it answered (never one without the other); comparisons they draw betwee
 their stated stance on what they saw; their own summing-up of the other person or their situation; and anything
 another line of the card refers back to. Shortening keeps conditions like "when" and "usually", and explicit facts
 are never softened or dropped.
+
+Secrets and knowledge: a secret counts as out only when the story shows that exact fact told or seen (crying in
+front of someone doesn't tell them about an earlier time she cried), and a change to who it's hidden from has to
+agree with that person's Hides line. A Knows line holds what the character found out; what they told someone is an
+event. A line of wants, likes or knowledge grows: the new part is added and the old parts stay unless the story
+ended them. How your persona looks or what they wear is never written into a card, since the story may have made
+it up. A day gets at most two new Shared history lines of about 40 words.
 
 Names: the log names who did what only when the story says it plainly ("unclear who" otherwise), and the update
 writes `[check: …]` instead of guessing. The review flags those.
@@ -127,7 +137,8 @@ reports:
 - **Not in the log**: something neither the log nor the card supports (an added cause, reason or detail).
 - **Wrong**: something the log or another line of the card contradicts (who did what to whom, the act, the order,
   dates, a name mix-up).
-- **Said twice**: something the card or another change already says.
+- **Said twice**: something the card or another change already says the same way. The same event told from two
+  people's entries, or a secret in SECRETS and in a Hides line, is not a repeat.
 - **Passing state**: a mood, where someone is right now, what they did that day.
 
 It also reads the whole card against the log and lists lines that are no longer true and that no change covers

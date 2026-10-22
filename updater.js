@@ -259,6 +259,7 @@ LIST ONLY
 LEAVE OUT
 - Anything ${name} did not see, hear or get told. Other characters' scenes without ${name} are not part of ${name}'s log. Leave such events out completely; don't list them with a note that ${name} missed them.
 - Passing moods, small talk and routine that changes nothing.
+- How ${u} looks, or what they wear or carry (jewellery, clothes, marks). The story may have made those up.
 
 FORMAT
 One line per event, starting with "- ", oldest first:
@@ -299,10 +300,12 @@ Each fact lives in one section, its home. Before you write a fact, find every pl
 - HISTORY only gets life changes (moving, a job, a break-up, a lasting injury) and events with nobody who has an entry.
 - What they found out: KNOWLEDGE, only when it is not already an event anywhere in the card.
 - What they hide: SECRETS. A Hides line in a relationship entry names the secret in a few words.
+- A secret is out only when the log shows that exact fact told to someone or seen by them. Something like it happening in front of them (crying, a fight, a phone call) does not reveal it. Before you change who a secret is hidden from, read the Hides line in that person's entry; change both or neither.
+- A Knows line, and KNOWLEDGE, holds only what this character found out. What they told someone else is an event: Shared history, or nowhere.
 - What they fear or resent: the fear section, not PERSONALITY.
 - Where they stand in a group: STANDING.
 - Where things stand now (who they live with, work for, are with): IDENTITY, or the Now line of that person's entry.
-- Never add a line the card already says somewhere else.
+- Never add a line the card already says somewhere else. A different angle is not a repeat: one entry says what happened between those two, SECRETS says who it is hidden from, another person's entry says how it touched them. The same fact told the same way twice is a repeat.
 - When you change one line of a relationship entry, read the entry's other lines (Now, Wants, Hides, Speech, As it grows) and change any that no longer agree with it.`;
 }
 
@@ -336,7 +339,7 @@ The roleplay model reads the whole card on every turn, so every line costs on ev
 - Each line is one plain sentence: when, who did what, to whom. Write it so someone who never read the scene understands it: full words, no shorthand, no half-quotes, no phrase that only makes sense if you remember the scene. Quote words only when the exact words matter, and then quote the whole sentence.
 - Write like the rest of the card: flat facts. No literary turns, no lines that land, no summing up, no clothes, rooms, weather or other colour.
 - Only events where this character acted, or that changed what they do, want or know from now on. Leave out what happened to the people around them (someone's car, someone else's news) unless it changed something for this character. A scene that changed nothing for them gets no line.
-- Shared history in a RELATIONSHIPS entry holds only the few events that matter most between the two (about five), each its own short dated line.
+- Shared history in a RELATIONSHIPS entry holds only the few events that matter most between the two (about five), each its own short dated line. One day gets at most two new lines. Each keeps the moment, the words said and what changed between them, in one or two sentences of about 40 words at most, and cuts the rest, even when older lines are longer.
 - When a new fact replaces an old one, change the old line instead of adding a new one.`;
 
 /** "CARD SIZE" line for the prompts. */
@@ -353,6 +356,7 @@ function updateRules(u) {
     return `WHAT TO CHANGE
 - Only what will still be true weeks of story time from now: who they are with and on what terms, where they live and work, what they now know, secrets that came out, goals reached or dropped, people who came into or left their life, lasting changes to how they look.
 - Never write a passing state into the card: mood, where they are right now, what they are doing that day, injuries that heal within days, plans for the day. The game tracks those itself.
+- Never write how ${u} looks or what they wear or carry (jewellery, clothes, marks, their body). Those are for ${u} to decide, and the story may have made them up. Keep the act and leave out the detail.
 - Use only facts the log or the card states. Add no causes, reasons, motives, feelings or details the log doesn't give (why someone came, what they had just finished, that something was unannounced). Check every fact you write against the rest of the card too: if the card says something happened before, don't write that it never did.
 - Read every line of the card against the log, not only the lines about the newest events. A line the log shows is no longer true gets changed wherever it is: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed.
 - PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. If you do change a PERSONALITY line, say in the reason which events show it.
@@ -369,6 +373,7 @@ ${CHECKS}
 HOW TO WRITE A CHANGE
 - To change part of a line: quote the words to change exactly in <find>, and give what replaces them in <new>. Every other word of the line stays as it is. Use this for any line longer than about thirty words. To add words at the end of a line, quote its last few words in <find> and repeat them in <new> with the addition.
 - To change a short line as a whole: give the whole line as it should read in <new>, without <find>. Keep every fact of the old line in its own words; change only the words that are no longer true.
+- A line that lists what someone wants, likes, fears, knows or hides grows: add the new part and keep the earlier parts that still hold. Replace a part only when the log shows it ended, and say so in the reason.
 - To add a line: say which existing line it goes after, and write it with the same leading spaces, bullet and field label as the lines around it. In a dated list, new lines go after the last line, in date order.
 - Remove a line, or words from a line, only when the log shows they are no longer true or the card already says them elsewhere; say which in the reason.
 - Never write line numbers into the text.
@@ -1067,10 +1072,10 @@ export function opsCheckSystemPrompt(userName, { stale = true } = {}) {
     return `You check proposed changes to a character card for a long-running roleplay. You don't write changes; you only report problems. You get the card with numbered lines, the log of what happened that the changes were written from (and the game's tracker rows, if any), and the list of changes.
 
 Compare each change with the log and with the rest of the card:
-- LOST: an edit or removal drops a fact from the old line while the log doesn't show that fact stopped being true, and the card doesn't state it anywhere else.
-- UNSUPPORTED: the new text states something neither the log, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early).
-- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere.
-- TWICE: the new text repeats something the card already says on another line (give that line's number), or another change already adds it. Anything involving ${u} belongs only in the entry for ${u} under RELATIONSHIPS, never in HISTORY or KNOWLEDGE.
+- LOST: an edit or removal drops a fact from the old line while the log doesn't show that fact stopped being true, and the card doesn't state it anywhere else. A want, like or piece of knowledge replaced by a newer one is lost unless the log shows the old one ended.
+- UNSUPPORTED: the new text states something neither the log, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early). Also any detail of how ${u} looks or what they wear or carry.
+- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere. Also wrong: a secret marked as told or found out when the log shows only something like it happening (crying in front of someone does not tell them about an earlier time she cried); a change to who a secret is hidden from that the person's own Hides line contradicts; something this character told someone written as what they know.
+- TWICE: the new text repeats something the card already says on another line, the same fact told the same way (give that line's number), or another change already adds it. Anything involving ${u} belongs only in the entry for ${u} under RELATIONSHIPS, never in HISTORY or KNOWLEDGE. Not a repeat: the same event in two people's entries when each says what it meant between those two, or a SECRETS line and a Hides line naming the same secret.
 - PASSING: the new text writes a passing state into the card: a mood, where someone is right now, what they are doing that day.
 ${stale ? `
 Then read every line of the card against the log and list the lines the log shows are no longer true and that none of the changes fix: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed, a belief that turned out false. Only lines the log clearly contradicts.
@@ -1145,6 +1150,45 @@ export function droppedTerms(oldLine, newText) {
 }
 
 const words = t => String(t ?? '').split(/\s+/).filter(Boolean).length;
+
+/**
+ * What an edit takes out of its line: the removed stretches whose words don't come back anywhere in the new text.
+ * @returns {{words: number, phrases: string[]}}
+ */
+export function cutPhrases(oldLine, newText) {
+    const norm = w => w.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '').replace(/['’]s$/, '');
+    const left = new Map();
+    for (const w of String(newText ?? '').split(/\s+/)) {
+        const k = norm(w);
+        if (k) left.set(k, (left.get(k) || 0) + 1);
+    }
+    for (const p of wordDiff(oldLine, newText)) {
+        if (p.type !== 'same') continue;
+        for (const w of p.text.split(/\s+/)) {
+            const k = norm(w);
+            if (k && left.get(k)) left.set(k, left.get(k) - 1);
+        }
+    }
+    let count = 0;
+    const phrases = [];
+    for (const p of wordDiff(oldLine, newText)) {
+        if (p.type !== 'del') continue;
+        const gone = p.text.split(/\s+/).filter((w) => {
+            const k = norm(w);
+            if (!k) return false;
+            if (left.get(k)) {
+                left.set(k, left.get(k) - 1);
+                return false;
+            }
+            return true;
+        });
+        if (gone.length) {
+            count += gone.length;
+            phrases.push(p.text.trim());
+        }
+    }
+    return { words: count, phrases };
+}
 
 /** The sentence of a line that shares the most words with another text, for showing where a repeat is. */
 function closestSentence(line, text) {
@@ -1229,13 +1273,17 @@ export function opWarnings(op, { personaNames = [] } = {}) {
     if (rel.length) warnings.push(`Counts from a day: ${rel.join(', ')}. Use the named date instead.`);
     const check = newText.match(/\[check:([^\]]*)\]/i);
     if (check && !/\[check:/i.test(oldText)) warnings.push(`Unsure who did it, check before saving: "${check[1].trim()}"`);
-    if (op.type === 'edit' && op.find === null) {
+    if (op.type === 'edit') {
+        const cut = cutPhrases(oldText, newText);
         const gone = droppedTerms(oldText, newText);
-        if (gone.length) warnings.push(`No longer says: ${gone.slice(0, 8).join(', ')}${gone.length > 8 ? '…' : ''}`);
+        if (cut.words >= 4) {
+            const shown = cut.phrases.map(x => `"${x.length > 120 ? `${x.slice(0, 120)}…` : x}"`).slice(0, 3).join(', ');
+            warnings.push(`Cuts from the line: ${shown}${cut.phrases.length > 3 ? ' …' : ''}`);
+        } else if (gone.length) warnings.push(`No longer says: ${gone.slice(0, 8).join(', ')}${gone.length > 8 ? '…' : ''}`);
     }
     const nw = words(newText);
     const ow = words(oldText);
-    if (op.type === 'add' && nw > 70) warnings.push(`The new line is ${nw} words long.`);
+    if (op.type === 'add' && nw > 50) warnings.push(`The new line is ${nw} words long.`);
     if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) warnings.push(`The line grows from ${ow} to ${nw} words.`);
     return { warnings, untick };
 }

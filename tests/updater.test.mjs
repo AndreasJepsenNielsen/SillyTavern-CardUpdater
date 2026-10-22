@@ -591,7 +591,7 @@ test('0.6: warnings: Leon outside his entry, clock times, dropped names, persona
     assert.ok(w[1].warnings.some(x => x === 'No longer says: Ellis'), w[1].warnings.join(' | '));
     assert.ok(!w[1].untick);
     assert.ok(w[2].untick && w[2].warnings.some(x => x.includes('Personality change')));
-    assert.ok(w[2].warnings.some(x => x.includes('No longer says: Ellis')));
+    assert.ok(w[2].warnings.some(x => x.startsWith('Cuts from the line: "she has none. With Ellis she is light and agreeable."')), w[2].warnings.join(' | '));
     assert.ok(w[3].warnings.some(x => /new line is 7\d words long/.test(x)), w[3].warnings.join(' | '));
     assert.ok(w[4].warnings.some(x => x.includes('Clock time: 10 PM')) && !w[4].warnings.some(x => x.includes('9:00')), 'quoted times are speech');
     assert.deepEqual(U.clockTimes('at ~3:42 PM, then 11:45pm, "7:08" and 3 amazing days'), ['3:42 PM', '11:45pm']);
@@ -688,4 +688,39 @@ test('0.6: word diff keeps unchanged words and marks the rest', () => {
     assert.deepEqual(d, [{ type: 'same', text: 'she has ' }, { type: 'del', text: 'none.' }, { type: 'add', text: 'Leon.' }, { type: 'same', text: ' With Ellis' }]);
     const e = U.wordDiff("- Doesn't know: him at all.", '- Knows: he lives next to Jules.');
     assert.deepEqual(e, [{ type: 'same', text: '- ' }, { type: 'del', text: "Doesn't know: him at all." }, { type: 'add', text: 'Knows: he lives next to Jules.' }]);
+});
+
+// ---------------------------------------------------------------- 0.6.1
+
+test('0.6.1: secrets, Knows, angles, growing lines, the player\'s looks and short Shared history are in the rules', () => {
+    const sys = U.systemPrompt('Leon');
+    for (const part of [
+        'A secret is out only when the log shows that exact fact told to someone or seen by them',
+        'read the Hides line in that person\'s entry; change both or neither',
+        'What they told someone else is an event: Shared history, or nowhere',
+        'A different angle is not a repeat',
+        'add the new part and keep the earlier parts that still hold',
+        'Never write how Leon looks or what they wear or carry',
+        'One day gets at most two new lines',
+    ]) assert.ok(sys.includes(part), part);
+    assert.ok(U.fixSystemPrompt('Leon').includes('A secret is out only when'), 'the fix step gets the same rules');
+    const chk = U.opsCheckSystemPrompt('Leon');
+    for (const part of ['crying in front of someone does not tell them', 'something this character told someone written as what they know', 'Not a repeat: the same event in two people\'s entries', 'how Leon looks or what they wear or carry', 'A want, like or piece of knowledge replaced by a newer one is lost']) assert.ok(chk.includes(part), part);
+    assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('How Leon looks, or what they wear or carry'));
+});
+
+test('0.6.1: words an edit cuts are named, also in a quoted-words edit', () => {
+    const c = U.cutPhrases("- Wants: since Day 6, his company plus the part where he doesn't ask her to be anything.", '- Wants: since Day 7, him.');
+    assert.equal(c.words, 14);
+    const ranges = U.updatableRanges(JULES);
+    const [op] = U.resolveOps(JULES, [{ id: 1, type: 'edit', line: 26, find: 'eats with him at his place on a standing invitation from Monday 19 May', text: 'her lover' }], ranges);
+    assert.ok(U.opWarnings(op).warnings.some(w => w.startsWith('Cuts from the line: "eats with him at his place on a standing invitation from Monday 19 May')));
+    assert.deepEqual(U.cutPhrases('- Now: eats with him.', '- Now: her lover; eats with him.'), { words: 0, phrases: [] }, 'adding cuts nothing');
+});
+
+test('0.6.1: the version in the window matches the manifest', async () => {
+    const fs = await import('node:fs');
+    const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url)));
+    const index = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    assert.equal(index.match(/const VERSION = '([^']+)'/)[1], manifest.version);
 });

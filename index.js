@@ -14,6 +14,7 @@ import {
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
+const VERSION = '0.6.1'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -239,7 +240,7 @@ function planCard(card, rebuild) {
     return { key, log, since, end, chunks, pending, readChars: chunks.reduce((a, ch) => a + ch.text.length, 0) };
 }
 
-function planText(card, plan) {
+function planText(card, plan, relog = false) {
     const parts = [];
     if (plan.chunks.length) {
         const from = plan.since === null ? 'the whole story' : `the story after message #${plan.since}`;
@@ -247,7 +248,8 @@ function planText(card, plan) {
     } else {
         parts.push(plan.since === null ? 'nothing in the story names them' : `nothing new since message #${plan.since}`);
     }
-    if (plan.pending) parts.push(`${plan.pending} logged line${plan.pending === 1 ? '' : 's'} not in the card yet`);
+    if (relog && plan.log) parts.push(`updates from all ${plan.log.lines.length} logged lines`);
+    else if (plan.pending) parts.push(`${plan.pending} logged line${plan.pending === 1 ? '' : 's'} not in the card yet`);
     if (plan.log) parts.push(`log has ${plan.log.lines.length} line${plan.log.lines.length === 1 ? '' : 's'}`);
     return `${card.title}: ${parts.join(' · ')}`;
 }
@@ -319,7 +321,7 @@ async function openUpdater() {
     const storyText = storyItems(c.chat, c.chatMetadata?.summaryception, { userName: c.name1 }).items.map(x => x.text).join('\n');
 
     const root = $(`<div class="card-updater-window">
-        <h3>Update character cards</h3>
+        <h3>Update character cards <span class="cu-muted">v${VERSION}</span></h3>
         <div class="cu-muted">First the story is read in parts and turned into a short log of what happened to each character; then the card is updated from that log. Logs are kept in this chat, so next time only the new part of the story is read.${hasSummary ? ' Uses the Summaryception summary where the chat has been summarised.' : ''}${storyDate ? ` Story date: <b>${esc(storyDate)}</b>.` : ''}</div>
         <div class="cu-row"><label>Lorebook</label><select class="text_pole cu-world"></select></div>
         <div class="cu-row cu-buttons"><div class="menu_button cu-select-story">Select everyone in the story</div><div class="menu_button cu-select-none">Clear</div></div>
@@ -327,6 +329,7 @@ async function openUpdater() {
         <div class="cu-label">Sections to update</div>
         <div class="cu-chips">${sectionChips(s)}</div>
         <label class="checkbox_label cu-rebuild"><input type="checkbox" class="cu-rebuild-box"><span>Rebuild the ticked cards' logs from the start of the story</span></label>
+        <label class="checkbox_label cu-relog" title="For a card you restored or edited by hand: the update uses every line of its log, also the ones already marked as done. The story isn't read again."><input type="checkbox" class="cu-relog-box"><span>Update from the ticked cards' whole log again (the story isn't read again)</span></label>
         <label class="checkbox_label cu-original" title="Tighten may also condense lines from the card as it was before its first update: repeats, and old backstory down to one line per period. Those changes come flagged and unticked."><input type="checkbox" class="cu-original-box"><span>Tighten: also condense the original card (repeats and old backstory)</span></label>
         <div class="cu-plan cu-muted"></div>
         <div class="cu-row cu-buttons"><div class="menu_button cu-draft">Draft updates</div><div class="menu_button cu-tighten" title="Cut repeats and shorten lines that updates added. Lines from the original card are left alone.">Tighten ticked cards</div><div class="menu_button cu-stop" style="display:none">Stop after this card</div></div>
@@ -341,13 +344,14 @@ async function openUpdater() {
     let cards = [];
     const chosenCards = () => root.find('[data-card]:checked').toArray().map(el => cards[Number(el.dataset.card)]).filter(Boolean);
     const rebuild = () => root.find('.cu-rebuild-box').prop('checked');
+    const relog = () => root.find('.cu-relog-box').prop('checked');
     const renderPlan = () => {
         const chosen = chosenCards();
         if (!chosen.length) {
             root.find('.cu-plan').html('');
             return;
         }
-        root.find('.cu-plan').html(chosen.map(card => `<div>${esc(planText(card, planCard(card, rebuild())))}</div>`).join(''));
+        root.find('.cu-plan').html(chosen.map(card => `<div>${esc(planText(card, planCard(card, rebuild()), relog()))}</div>`).join(''));
     };
     const renderCards = async () => {
         const v = String(worldSel.val());
@@ -395,7 +399,7 @@ async function openUpdater() {
         root.find('[data-card]').prop('checked', false);
         renderPlan();
     });
-    root.find('.cu-rebuild-box').on('change', renderPlan);
+    root.find('.cu-rebuild-box, .cu-relog-box').on('change', renderPlan);
     root.find('[data-section]').on('change', function () {
         s.sections[this.dataset.section] = this.checked;
         save();
@@ -419,17 +423,18 @@ async function openUpdater() {
         root.find('.cu-draft, .cu-tighten').addClass('disabled');
         root.find('.cu-stop').show();
         const doRebuild = rebuild();
+        const doRelog = relog();
         for (let i = 0; i < chosen.length; i++) {
             if (stopAfter || abort.signal.aborted) break;
             const block = $('<div class="cu-result"></div>').appendTo(root.find('.cu-results'));
             const counter = `${i + 1}/${chosen.length}`;
             if (tighten) await runTighten(chosen[i], kinds, s, block, root.find('.cu-status'), abort.signal, counter, root.find('.cu-original-box').prop('checked'));
-            else await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, counter);
+            else await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, counter, doRelog);
         }
         running = false;
         root.find('.cu-draft, .cu-tighten').removeClass('disabled');
         root.find('.cu-stop').hide();
-        root.find('.cu-rebuild-box').prop('checked', false);
+        root.find('.cu-rebuild-box, .cu-relog-box').prop('checked', false);
         renderPlan();
         root.find('.cu-status').text(stopAfter ? 'Stopped.' : 'Done. Review each card below and save what you want to keep.');
     };
@@ -445,7 +450,7 @@ function cardHead(card, extra = '') {
     return `<div class="cu-card-title">${esc(card.title)} <span class="cu-muted">${esc(card.world)}${extra ? ` · ${esc(extra)}` : ''}</span></div>`;
 }
 
-async function runCard(card, kinds, rebuild, s, block, status, signal, counter) {
+async function runCard(card, kinds, rebuild, s, block, status, signal, counter, relog = false) {
     const c = ctx();
     const started = Date.now();
     const elapsed = () => `${Math.round((Date.now() - started) / 1000)} s`;
@@ -497,7 +502,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
     chatStore().logs[plan.key] = log;
     await c.saveMetadata();
 
-    const newLines = log.lines.slice(log.applied || 0);
+    const newLines = relog ? log.lines.slice() : log.lines.slice(log.applied || 0);
     if (!newLines.length) {
         block.html(`${cardHead(card, elapsed())}<div class="cu-muted">Nothing new involving ${esc(card.title)} since the last update.</div>`);
         return;
@@ -1214,7 +1219,7 @@ function settingsHtml() {
 <div id="card_updater_settings" class="card-updater">
   <div class="inline-drawer">
     <div class="inline-drawer-toggle inline-drawer-header">
-      <b>Card Updater</b>
+      <b>Card Updater <span class="cu-muted">v${VERSION}</span></b>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
