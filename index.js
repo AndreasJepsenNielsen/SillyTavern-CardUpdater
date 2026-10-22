@@ -23,7 +23,7 @@ const DEFAULTS = Object.freeze({
     apiModel: '',
     maxTokens: 32000,
     temperature: 0.8,
-    logThinking: 'off', // reading the story into the log is listing, not reasoning
+    logThinking: 'medium', // low thinking mixed up who did what
     updateThinking: 'medium',
     cardLimit: 5000, // tokens; the template's limit for a lead
     profileId: '',
@@ -45,7 +45,7 @@ function settings() {
         if (s[k] === undefined) s[k] = typeof v === 'object' ? structuredClone(v) : v;
     }
     for (const [k] of UPDATABLE) if (s.sections[k] === undefined) s.sections[k] = true;
-    if (firstLoad) s.settingsVersion = 3;
+    if (firstLoad) s.settingsVersion = 4;
     if ((s.settingsVersion || 1) < 2) {
         // 0.5 was the first default; GLM's reasoning models loop more easily that low.
         if (s.temperature === 0.5) s.temperature = 0.8;
@@ -55,6 +55,12 @@ function settings() {
         // The model's default thinking ran long on the card update.
         if (s.updateThinking === 'default') s.updateThinking = 'medium';
         s.settingsVersion = 3;
+    }
+    if (s.settingsVersion < 4) {
+        // Low thinking mixed up names in the log; every step gets at least Medium.
+        if (['off', 'low', 'default'].includes(s.logThinking)) s.logThinking = 'medium';
+        if (['off', 'low', 'default'].includes(s.updateThinking)) s.updateThinking = 'medium';
+        s.settingsVersion = 4;
     }
     return s;
 }
@@ -286,6 +292,7 @@ async function openUpdater() {
         <div class="cu-label">Sections to update</div>
         <div class="cu-chips">${sectionChips(s)}</div>
         <label class="checkbox_label cu-rebuild"><input type="checkbox" class="cu-rebuild-box"><span>Rebuild the ticked cards' logs from the start of the story</span></label>
+        <label class="checkbox_label cu-original" title="Tighten may also condense lines from the card as it was before its first update: repeats, and old backstory down to one line per period. Those changes come flagged and unticked."><input type="checkbox" class="cu-original-box"><span>Tighten: also condense the original card (repeats and old backstory)</span></label>
         <div class="cu-plan cu-muted"></div>
         <div class="cu-row cu-buttons"><div class="menu_button cu-draft">Draft updates</div><div class="menu_button cu-tighten" title="Cut repeats and shorten lines that updates added. Lines from the original card are left alone.">Tighten ticked cards</div><div class="menu_button cu-stop" style="display:none">Stop after this card</div></div>
         <div class="cu-status cu-muted"></div>
@@ -381,7 +388,7 @@ async function openUpdater() {
             if (stopAfter || abort.signal.aborted) break;
             const block = $('<div class="cu-result"></div>').appendTo(root.find('.cu-results'));
             const counter = `${i + 1}/${chosen.length}`;
-            if (tighten) await runTighten(chosen[i], kinds, s, block, root.find('.cu-status'), abort.signal, counter);
+            if (tighten) await runTighten(chosen[i], kinds, s, block, root.find('.cu-status'), abort.signal, counter, root.find('.cu-original-box').prop('checked'));
             else await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, counter);
         }
         running = false;
@@ -498,7 +505,7 @@ function diffHtml(oldBody, newBody) {
     }).join('');
 }
 
-async function runTighten(card, kinds, s, block, status, signal, counter) {
+async function runTighten(card, kinds, s, block, status, signal, counter, includeOriginal = false) {
     const c = ctx();
     const started = Date.now();
     const elapsed = () => `${Math.round((Date.now() - started) / 1000)} s`;
@@ -510,12 +517,12 @@ async function runTighten(card, kinds, s, block, status, signal, counter) {
     const key = `${card.world}|${card.uid}`;
     const original = getOriginal(key);
     const ranges = updatableRanges(content, new Set(kinds));
-    if (original === null) {
-        block.html(`${cardHead(card)}<div class="cu-muted">This card hasn't been updated in this chat, so there are no added lines to tighten.</div>`);
+    if (original === null && !includeOriginal) {
+        block.html(`${cardHead(card)}<div class="cu-muted">This card hasn't been updated in this chat, so there are no added lines to tighten. Tick "also condense the original card" to tighten it anyway.</div>`);
         return;
     }
     const marked = markNewLines(content, original, ranges);
-    if (!marked.newLines) {
+    if (!marked.newLines && !includeOriginal) {
         block.html(`${cardHead(card)}<div class="cu-muted">The ticked sections have no lines added by updates, so there is nothing to tighten.</div>`);
         return;
     }
@@ -524,7 +531,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter) {
     status.text(`${card.title} (${counter}): tightening ${marked.newLines} added lines…`);
     let reply;
     try {
-        reply = await sendWithRetry(s, tightenSystemPrompt(c.name1), tightenUserPrompt({
+        reply = await sendWithRetry(s, tightenSystemPrompt(c.name1, { original: includeOriginal }), tightenUserPrompt({
             card: marked.text, title: card.title, sections: ranges.map(r => r.title), tokens, limit: Number(s.cardLimit) || 0,
         }), {
             signal,
@@ -541,7 +548,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter) {
     clearInterval(tick);
     const parsed = parseReply(reply);
     for (const u of parsed.updates) u.text = stripNewMarks(u.text);
-    renderReview(card, content, ranges, parsed, '', block, elapsed(), reply, null, { tighten: true, original });
+    renderReview(card, content, ranges, parsed, '', block, elapsed(), reply, null, { tighten: true, original: original ?? content });
 }
 
 function renderReview(card, content, ranges, parsed, storyDate, block, took, rawReply, logInfo, opts = {}) {
@@ -560,7 +567,10 @@ function renderReview(card, content, ranges, parsed, storyDate, block, took, raw
         items.push({ range: r, kind: r.kind, title: r.title, reason: u.reason, oldBody, newBody: u.text, accept: r.kind !== 'personality' });
     }
 
-    const head = cardHead(card, took);
+    const conflicts = (parsed.conflicts || []).length
+        ? `<div class="cu-conflicts"><div class="cu-warn"><b>Lines that may no longer be true</b> (fix these yourself, in the lorebook):</div>${parsed.conflicts.map(x => `<div class="cu-warn">• ${esc(x)}</div>`).join('')}</div>`
+        : '';
+    const head = cardHead(card, took) + conflicts;
     const tail = `${logInfo ? logDetails(logInfo.newLines) : ''}<details><summary>Model reply</summary><pre class="cu-pre">${esc(rawReply)}</pre></details>`;
     if (!items.length && opts.tighten) {
         block.html(`${head}<div class="cu-muted">${parsed.none ? 'Nothing to cut.' : 'No usable changes in the reply.'}${unplaced.length ? ` Could not place: ${esc(unplaced.join(', '))}.` : ''}</div>${tail}`);

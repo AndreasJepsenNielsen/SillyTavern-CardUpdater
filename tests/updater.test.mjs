@@ -343,3 +343,24 @@ test('prompts: say-it-once, keep-it-short and the size note', () => {
     const tp = U.tightenUserPrompt({ card: '[new] x', title: 'Jules', sections: ['HISTORY', 'RELATIONSHIPS'], tokens: 8000, limit: 5000 });
     assert.ok(tp.includes('SECTIONS YOU MAY TIGHTEN: HISTORY, RELATIONSHIPS') && tp.includes('LIMIT: 5,000'));
 });
+
+test('0.4 rules: keep order, names, contradictions, homes, explicit facts', () => {
+    const sys = U.systemPrompt('Leon');
+    for (const part of ['WHAT TO KEEP WHEN YOU CONDENSE', 'Never keep an answer without what it answered', 'comparisons the character draws between Leon', '[check: what is unclear]', '<conflict>', 'What they hide: SECRETS', 'Never soften, censor or drop explicit or sexual facts', 'keep conditions and qualifiers']) {
+        assert.ok(sys.includes(part), part);
+    }
+    assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('write "unclear who" rather than guessing'));
+    assert.ok(U.tightenSystemPrompt('Leon').includes('Only lines marked [new]'));
+    const withOriginal = U.tightenSystemPrompt('Leon', { original: true });
+    assert.ok(withOriginal.includes('one line per period') && !withOriginal.includes('Only lines marked [new]'));
+});
+
+test('0.4 reply: conflicts are read, [check:] and very long lines are flagged', () => {
+    const p = U.parseReply('<update><heading>HISTORY</heading><text>a</text></update>\n<conflict>"closest person: she has none" -> calls Leon the only thing she has, Day 6</conflict>\n<conflict> </conflict>');
+    assert.deepEqual(p.conflicts, ['"closest person: she has none" -> calls Leon the only thing she has, Day 6']);
+    assert.deepEqual(U.parseReply('<none/>\n<conflict>x -> y</conflict>').conflicts, ['x -> y']);
+    const w = U.checkUpdate('knowledge', 'a', 'a\n- Does not know: what [check: who hurt Leon\'s face] did over four years.');
+    assert.ok(w.some(x => x.includes('Unsure who did it') && x.includes("who hurt Leon's face")));
+    const long = U.checkUpdate('relationships', 'a', `a\n- ${'word '.repeat(80)}`);
+    assert.ok(long.some(x => x.includes('over 70 words')));
+});

@@ -263,7 +263,9 @@ LEAVE OUT
 FORMAT
 One line per event, starting with "- ", oldest first:
 - [story date as the story writes it, or "undated"]: what happened. Present: who was there.
-Plain words, events not interpretation. Say who said what when it matters. Keep each line short.
+Plain words, events not interpretation. Keep each line short.
+- When someone says something that changes how two people stand with each other, give their words, and give the other person's answer with it.
+- Name who did or said what exactly as the story says. If the story doesn't make clear who did something, write "unclear who" rather than guessing a name.
 If nothing in this part involves ${name}, reply with exactly: NONE`;
 }
 
@@ -289,13 +291,37 @@ export function parseLog(reply) {
 /** Where each kind of fact lives, so the card says everything once. */
 function sayItOnce(u) {
     return `SAY IT ONCE
-Each fact lives in one section. Another section that needs it points to it in a few words ("see HISTORY") or leaves it out.
-- Anything between this character and ${u}: only in their entry for ${u} under RELATIONSHIPS.
-- Events with other people: one line in HISTORY. That person's RELATIONSHIPS entry only gets a few words in Shared history when the event changed things between them.
+Each fact lives in one section, its home. Before you write a fact, find every place the card already states it. Keep it in its home; anywhere else, cut it, or keep a few words only when that section needs a different angle on it.
+- Anything between this character and ${u}: their entry for ${u} under RELATIONSHIPS.
+- Events with other people: one line in HISTORY. That person's RELATIONSHIPS entry gets a few words in Shared history only when the event changed things between them.
 - What they found out: KNOWLEDGE, only when it is not already a HISTORY line.
-- Where things stand now (who they live with, work for, are with): IDENTITY, one short line each.
-- Before adding a line, check whether the card already says it. If it does, don't add it again.`;
+- What they hide: SECRETS. A Hides line in a relationship entry names the secret in a few words.
+- What they fear or resent: the fear section, not PERSONALITY.
+- Where they stand in a group: STANDING.
+- Where things stand now (who they live with, work for, are with): IDENTITY, or the Now line of that person's entry.
+- Never add a line the card already says somewhere else.`;
 }
+
+/** What survives when lines are condensed, in order; what goes first. */
+function keepWhatMatters(u) {
+    return `WHAT TO KEEP WHEN YOU CONDENSE
+Drop first: objects, places, logistics, what was bought, carried or driven, where someone was dropped off, who arrived when. Keep, in this order:
+a) words either person said that changed how they stand with each other, in their own words;
+b) the character's answer to a charged line, together with the line. Never keep an answer without what it answered, and never keep a line without the answer that followed;
+c) comparisons the character draws between ${u} and someone else;
+d) the character's stated stance on what they saw or did;
+e) the character's own summing-up of the other person or of their own situation;
+f) anything another line of the card refers back to (when a Wants or Speech line depends on something that was said, keep what was said).
+Shortening keeps the meaning: keep conditions and qualifiers such as when, usually, after, only if.
+Never soften, censor or drop explicit or sexual facts; keep them in the card's own words.`;
+}
+
+/** How to handle names and contradictions; both end up as warnings in the review. */
+const CHECKS = `NAMES AND CONTRADICTIONS
+- Write a name for who did something only when the log or the card says it plainly. If you are not sure who did it, write [check: what is unclear] in its place instead of guessing.
+- When the log shows the character saying or doing something that contradicts a line in the card (a trait, a belief, a fear, how they see someone), change that line if its section is one you may change (listed above). Otherwise report it, one per contradiction:
+<conflict>the card line, quoted -> what the story shows now, with the date</conflict>`;
+
 
 const KEEP_IT_SHORT = `KEEP IT SHORT AND PLAIN
 The roleplay model reads the whole card on every turn, so every line costs on every reply, and it copies the way the card is written.
@@ -329,6 +355,10 @@ ${sayItOnce(u)}
 
 ${KEEP_IT_SHORT}
 
+${keepWhatMatters(u)}
+
+${CHECKS}
+
 HOW TO WRITE IT
 - Keep the card's own format exactly: the same headings, bullet style, field labels (Wants:, Hides:, Speech:, Shared history:, Now:) and line layout. Keep every line you are not changing exactly as it is, in its place.
 - HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Write events, not what they meant. Most log lines don't belong in the card at all.
@@ -348,7 +378,7 @@ For every section you change, return the whole new body of that section (everyth
 the whole new section body
 </text>
 </update>
-Only update the sections listed under SECTIONS YOU MAY UPDATE. Leave out sections that need no change. If nothing in the log changes this card, return only <none/>.
+Only update the sections listed under SECTIONS YOU MAY UPDATE. Leave out sections that need no change. Add any <conflict> lines after the updates. If nothing in the log changes this card, return only <none/> (and any <conflict> lines).
 At the very end, on its own line, write the newest story date in the log: <storydate>...</storydate>`;
 }
 
@@ -402,18 +432,28 @@ export function lostOriginalLines(oldBody, newBody, original) {
     return String(oldBody ?? '').split('\n').map(l => l.trim()).filter(l => l && orig.has(l) && !kept.has(l));
 }
 
-export function tightenSystemPrompt(userName) {
+export function tightenSystemPrompt(userName, { original = false } = {}) {
     const u = userName || 'the player character';
-    return `You tighten one character card for a long-running roleplay. Updates from play have made it long and repetitive. Make it shorter without losing any fact.
-
-WHAT YOU MAY CHANGE
+    const scope = original
+        ? `WHAT YOU MAY CHANGE
+- Lines marked [new] were added by updates during play; condense them as below.
+- Lines without the mark come from the original card. This time you may condense them too, but only to cut repeats and old backstory: give old backstory one line per period of the character's life, keeping only what explains how they act now or involves people still in the story. Episodes with side characters who never come up now are cut, not summarised. Keep every original line that still matters word for word.
+- Never remove a heading or a section, and never touch a section that isn't listed under SECTIONS YOU MAY TIGHTEN.`
+        : `WHAT YOU MAY CHANGE
 - Only lines marked [new]. Those were added by updates during play.
 - Lines without the mark come from the original card. Keep each of them exactly as it is, in its place, even when you'd write it differently.
-- Never remove a heading or a section, and never touch a section that isn't listed under SECTIONS YOU MAY TIGHTEN.
+- Never remove a heading or a section, and never touch a section that isn't listed under SECTIONS YOU MAY TIGHTEN.`;
+    return `You tighten one character card for a long-running roleplay. Updates from play have made it long and repetitive. Make it shorter while keeping what makes the character act the way they do.
+
+${scope}
 
 ${sayItOnce(u)}
 
 ${KEEP_IT_SHORT}
+
+${keepWhatMatters(u)}
+
+${CHECKS}
 
 HOW TO TIGHTEN
 - Remove a [new] line when the card already states the same fact somewhere else; leave a few words pointing to it only where the reader would otherwise miss it.
@@ -421,7 +461,7 @@ HOW TO TIGHTEN
 - Merge [new] lines that say the same thing.
 - Split a [new] line that crams several events into one line, then keep only the events that matter.
 - Rewrite [new] lines that use shorthand or literary phrasing as plain sentences.
-- If a Shared history holds more than about five events, cut or merge the least important [new] lines.
+- If a Shared history holds more than about five events, keep the ones that matter most by the order above and cut the rest.
 - Never drop a fact that matters to how the character acts or what they know just to save space.
 - Keep the card's format: headings, bullet style, field labels.
 
@@ -434,7 +474,7 @@ For every section you change, return the whole new body of that section (everyth
 the whole new section body
 </text>
 </update>
-If nothing can be cut, return only <none/>.`;
+Add any <conflict> lines after the updates. If nothing can be cut, return only <none/> (and any <conflict> lines).`;
 }
 
 export function tightenUserPrompt({ card, title, sections, tokens, limit }) {
@@ -466,7 +506,8 @@ export function parseReply(reply) {
         updates.push({ heading, reason: (inner(m[1], 'reason') || '').trim(), text: body.replace(/^\n+|\s+$/g, '') });
     }
     const storyDate = (inner(text, 'storydate') || '').trim();
-    return { updates, storyDate, none: !updates.length && /<none\s*\/?>/i.test(text) };
+    const conflicts = [...text.matchAll(/<conflict>([\s\S]*?)<\/conflict>/gi)].map(m => m[1].trim()).filter(Boolean);
+    return { updates, storyDate, conflicts, none: !updates.length && /<none\s*\/?>/i.test(text) };
 }
 
 /** Finds the range a reply's heading means: same title, else same kind. */
@@ -534,7 +575,14 @@ export function checkUpdate(kind, oldBody, newBody) {
     if (kind === 'history' && removed.length) warnings.push(`Removes or rewrites ${removed.length} existing history line${removed.length === 1 ? '' : 's'}.`);
     const lostHeads = removed.filter(d => headingInfo(d.line) && !String(newBody).includes(d.line.trim()));
     for (const d of lostHeads) warnings.push(`Drops "${d.line.trim()}".`);
-    const rel = relativeTimeWords(diff.filter(d => d.type === 'add').map(d => d.line).join('\n'));
+    const added = diff.filter(d => d.type === 'add').map(d => d.line);
+    const rel = relativeTimeWords(added.join('\n'));
     if (rel.length) warnings.push(`Counts from a day: ${rel.join(', ')}. Use the named date instead.`);
+    for (const line of added) {
+        const m = line.match(/\[check:([^\]]*)\]/i);
+        if (m) warnings.push(`Unsure who did it, check before saving: "${m[1].trim()}"`);
+    }
+    const long = added.filter(l => l.split(/\s+/).filter(Boolean).length > 70);
+    if (long.length) warnings.push(`${long.length} added line${long.length === 1 ? ' is' : 's are'} over 70 words: "${long[0].trim().slice(0, 60)}…"`);
     return warnings;
 }

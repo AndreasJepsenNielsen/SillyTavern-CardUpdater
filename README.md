@@ -28,9 +28,9 @@ Pick one under **Connection source**:
 
 None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high.
 
-**Thinking** (direct connection, sent as OpenRouter's reasoning setting): off by default while reading the story,
-since that step only lists events, and Medium while updating or tightening a card. A model that can't think "off"
-(OpenRouter answers "Reasoning is mandatory") gets Low instead, remembered per model. Temperature defaults to 0.8;
+**Thinking** (direct connection, sent as OpenRouter's reasoning setting): Medium for every step by default. Low
+thinking mixed up who did what. A model that can't think "off" (OpenRouter answers "Reasoning is mandatory") gets
+Low instead of Off, remembered per model. Temperature defaults to 0.8;
 GLM's reasoning models get stuck in loops more easily at low temperatures.
 
 **Loop guard**: if the model's thinking or reply starts repeating itself, the request is stopped right away and
@@ -85,6 +85,22 @@ themselves (also the hidden ones) or the summary pieces that cover them.
 Warnings in yellow: a personality change, history lines removed or rewritten, a relationship entry or sub-section
 dropped, or words that count from a day.
 
+## What the updates keep
+
+When lines are written or condensed, props, places and logistics go first. What stays, in order: words either
+person said that changed how they stand with each other, in their own words; the character's answer together with
+the line it answered (never one without the other); comparisons they draw between your persona and someone else;
+their stated stance on what they saw; their own summing-up of the other person or their situation; and anything
+another line of the card refers back to. Shortening keeps conditions like "when" and "usually", and explicit facts
+are never softened or dropped.
+
+Names: the log names who did what only when the story says it plainly ("unclear who" otherwise), and the update
+writes `[check: …]` instead of guessing. The review flags those.
+
+Contradictions: when the story has the character saying or doing something that contradicts a line on the card,
+the update changes that line if its section is ticked, or reports it. Reports show at the top of the review under
+**Lines that may no longer be true**, to fix by hand.
+
 ## Size and Tighten
 
 Updates are told the card's size and the **Card size limit** (5,000 tokens by default, the template's limit for a
@@ -97,6 +113,10 @@ from the card as it was before its first update in this chat stay word for word.
 splits crammed lines, rewrites shorthand as plain sentences and keeps each Shared history to the events that
 matter most. A change to an original line is flagged and left unticked. Each card's size is shown in the list,
 and the review shows the size before and after the ticked changes.
+
+**Tighten: also condense the original card** lets Tighten work on the original lines too: repeats, and old backstory
+down to one line per period of the character's life, cutting episodes with side characters who never come up now.
+Every change to an original line still arrives flagged and unticked.
 
 ## Versions
 
