@@ -1,8 +1,8 @@
 # Card Updater
 
-A SillyTavern extension that drafts updates to character cards from what has happened in the chat. You review
-every section side by side before anything is saved, and the previous version of the card is kept in the chat
-so it can be restored.
+A SillyTavern extension that drafts updates to character cards from what has happened in the chat. Updates come
+as a list of changes to single lines, each checked against the story; you tick the ones you want before anything is
+saved, and the previous version of the card is kept in the chat so it can be restored.
 
 It works on lorebook entries written in the character card template (all-caps section headings such as
 `HISTORY`, `RELATIONSHIPS`, `SPEECH AND VOICE`).
@@ -29,9 +29,9 @@ Pick one under **Connection source**:
 None of them sends your chat preset's prompts. Max tokens counts the model's thinking too, so keep it high.
 
 **Thinking** (direct connection, sent as OpenRouter's reasoning setting): Medium for reading the story and for the
-check pass, High for updating and tightening a card. Low thinking mixed up who did what.
+check pass, High for updating, fixing and tightening a card. Low thinking mixed up who did what.
 
-**Model for updating and tightening**: leave empty to use the same model for every step, or put a stronger model
+**Model for updating and tightening** (also used for fixing): leave empty to use the same model for every step, or put a stronger model
 here (for example `z-ai/glm-5.3`) and keep a fast one above for reading the story. A model that can't think "off" (OpenRouter answers "Reasoning is mandatory") gets
 Low instead of Off, remembered per model. Temperature defaults to 0.8;
 GLM's reasoning models get stuck in loops more easily at low temperatures.
@@ -50,8 +50,10 @@ the end of the model's thinking.
    Fear and Resent, Small Habits and Inner Life are never changed.
 4. Under the sections, each ticked card shows what it will read ("reads the whole story: 6 parts, about 22,000
    tokens"). Click **Draft updates**.
-5. For each section: green lines are added, red lines removed. Untick what you don't want, or open
-   **Edit before saving** to change the text. Then **Save ticked sections**.
+5. Each change is its own row, grouped by section and relationship entry: the line it changes with the changed
+   words marked (red out, green in), the line it adds and where, or the line it removes. Each row says why, and
+   what the check found. Untick what you don't want, or open **Edit before saving** to change the text. Then
+   **Save ticked changes**. **Mark log lines as done without saving** skips those log lines next time.
 
 ## How it reads the story
 
@@ -62,8 +64,11 @@ Each card is done in two steps, so no single request is huge:
    those. A scene that never names them is something they didn't see. These parts are sent in pieces of about
    6,000 tokens, three at a time, and each comes back as a few dated lines of what the character did, saw, heard
    or was told.
-2. **The update.** The card is updated from the new log lines and the tracker rows that name the character,
-   not from the raw story.
+2. **The update.** The model gets the card with numbered lines, the new log lines and the tracker rows that name
+   the character (not the raw story), and returns a list of changes: change line N (quoting just the words to
+   change in a long line), add a line after line N, or remove line N. Every line it doesn't name stays exactly as
+   it is. Clock times are taken out of the log lines first (the date is enough), and lines the log model ran
+   together are split.
 
 The log is kept in the chat. Next time only the story after the last read is used, and only log lines that aren't
 in the card yet go to the update. If reading fails partway, nothing is added to the log, so the next run starts
@@ -79,14 +84,23 @@ themselves (also the hidden ones) or the summary pieces that cover them.
   where they are right now or plans for the day.
 - Only what that character knows: events they were there for or were told about.
 - Everything between the character and your persona goes in their entry for you under RELATIONSHIPS.
-- HISTORY keeps every existing line and adds new dated events after them.
+- Existing lines are never rewritten as a whole section; a long line is changed by quoting only the words that
+  change, so the rest of the line stays word for word.
 - Dates are the story's named days as the chat headers write them. Words that count from a day (yesterday,
   tonight, "four days clean") are flagged.
 - PERSONALITY only changes when the story shows a lasting change. Those rows are unticked by default and flagged.
 - CANON POINT gets "updated with the story up to [date]" so the card doesn't claim nothing has happened since.
 
-Warnings in yellow: a personality change, history lines removed or rewritten, a relationship entry or sub-section
-dropped, or words that count from a day.
+Warnings in yellow, about what the change itself adds (never about what the line already said):
+
+- a personality change (unticked);
+- anything involving your persona added to HISTORY or KNOWLEDGE (unticked: it belongs in their entry for you);
+- a change outside the sections you ticked (unticked);
+- a clock time, or words that count from a day;
+- names or numbers a rewritten line no longer has ("No longer says: Ellis, Day 5");
+- a new line over 70 words, or a line that grows a lot;
+- a new line that is mostly the same words as another line of the card, with that line's closest sentence;
+- a line number that was off by one and was moved to the line it plainly fits.
 
 ## What the updates keep
 
@@ -104,26 +118,37 @@ Contradictions: when the story has the character saying or doing something that 
 the update changes that line if its section is ticked, or reports it. Reports show at the top of the review under
 **Lines that may no longer be true**, to fix by hand.
 
-## The check pass
+## The check pass and the fix
 
-After each draft (updates and Tighten), one more request reads the old and new text of every changed section next
-to the log and the rest of the card, and reports:
+After each draft, one more request reads every change next to the numbered card, the log and the tracker rows, and
+reports:
 
-- **Lost**: a fact that disappeared although the log doesn't show it stopped being true.
-- **Not in the log**: a new statement that neither the log nor the old card supports.
-- **Wrong**: something the log contradicts (who did what to whom, the act, dates, a name mix-up).
-- **Said twice**: a new fact the card already states elsewhere.
+- **Lost**: a fact the change drops although the log doesn't show it stopped being true.
+- **Not in the log**: something neither the log nor the card supports (an added cause, reason or detail).
+- **Wrong**: something the log or another line of the card contradicts (who did what to whom, the act, the order,
+  dates, a name mix-up).
+- **Said twice**: something the card or another change already says.
+- **Passing state**: a mood, where someone is right now, what they did that day.
 
-Each finding shows on its section. A section with something lost, unsupported or wrong comes unticked. Separately,
-the code flags any added line that is mostly the same words as another line on the card, and says where.
-Turn the check off with **Check each draft**.
+It also reads the whole card against the log and lists lines that are no longer true and that no change covers
+(a "she has none" the story has ended, a rule that was broken).
+
+Then the fix step: the flagged changes and the outdated lines in the ticked sections go back to the updating model
+once, with what the check found. For each flagged change it sends a corrected version, drops it, or keeps it and
+says why the check is wrong; for each outdated line it sends a change. The corrected and new changes are checked
+once more. The review says what happened ("Fix: 3 fixed, 1 dropped, 2 outdated lines changed"), and a change
+that still has a problem comes unticked, with the problem shown. Dropped changes are listed at the bottom.
+Outdated lines nothing covers, and lines in sections you didn't tick, show at the top under **Lines that may no
+longer be true**.
+
+Turn these off with **Check each draft** and **Fix what the check finds**. Tighten drafts get the check without
+the fix.
 
 ## Size and Tighten
 
 Anything involving your persona lives only in their entry for you, even when other people were there; an event
 with another person who has an entry goes in that person's entry; HISTORY only gets life changes and events with
-nobody who has an entry. Lines are edited, not rewritten: a new fact is added to a line, and the line's other facts
-stay in their words.
+nobody who has an entry.
 
 Updates are told the card's size and the **Card size limit** (5,000 tokens by default, the template's limit for a
 lead): an update may not take a card over it, and a card that is already over only gets what is essential. They

@@ -263,6 +263,7 @@ LEAVE OUT
 FORMAT
 One line per event, starting with "- ", oldest first:
 - [story date as the story writes it, or "undated"]: what happened. Present: who was there.
+The date only, without the clock time.
 Plain words, events not interpretation. Keep each line short.
 - When someone says something that changes how two people stand with each other, give their words, and give the other person's answer with it.
 - Name who did or said what exactly as the story says. If the story doesn't make clear who did something, write "unclear who" rather than guessing a name.
@@ -324,7 +325,7 @@ const CHECKS = `NAMES AND CONTRADICTIONS
 - Write a name for who did something only when the log or the card says it plainly. If you are not sure who did it, write [check: what is unclear] in its place instead of guessing.
 - Keep who did what to whom exactly as the log has it, and name each act as the log does. Never turn one act into another (touching into sex, a kiss into more), never swap who watched and who acted, and never merge two events into one. When the same event goes into two entries, both must say the same thing.
 - A Speech line says how this character talks to that person. What the other person says, thinks or calls them is not Speech; leave it out or put it in Shared history.
-- When the log shows the character saying or doing something that contradicts a line in the card (a trait, a belief, a fear, how they see someone), change that line if its section is one you may change (listed above). Otherwise report it, one per contradiction:
+- When the log shows the character saying or doing something that contradicts a line in the card (a trait, a belief, a fear, how they see someone), change that line if its section is one you may change. Otherwise report it, one per contradiction:
 <conflict>the card line, quoted -> what the story shows now, with the date</conflict>`;
 
 
@@ -347,15 +348,15 @@ export function sizeNote(tokens, limit) {
         : 'Your changes must not take the card over the limit.'}`;
 }
 
-export function systemPrompt(userName) {
-    const u = userName || 'the player character';
-    return `You update one character card for a long-running roleplay so it matches what has happened in the story. The roleplay model reads this card on every turn and treats it as the truth about the character. You get the card and a dated log of what happened to the character since the card was last updated. The log already holds only what the character did, saw or was told. Only change what the log actually changes.
-
-WHAT TO CHANGE
+/** The rules for writing changes, shared by the update step and the fix step. */
+function updateRules(u) {
+    return `WHAT TO CHANGE
 - Only what will still be true weeks of story time from now: who they are with and on what terms, where they live and work, what they now know, secrets that came out, goals reached or dropped, people who came into or left their life, lasting changes to how they look.
-- Never write a passing state into the card: mood, where they are right now, what they are doing today, injuries that heal within days, plans for the day. The game tracks those itself.
-- PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. When in doubt, leave PERSONALITY alone. If you do change it, change only the affected lines and say in the reason which events show it.
-- Everything between this character and ${u} goes in their entry for ${u} under RELATIONSHIPS (Wants, Hides, Speech, Shared history), not in HISTORY or KNOWLEDGE. If that entry says they have not met ${u} and they now have, rewrite it as an entry for someone they know: Wants, Hides, a Speech line that says what they do when they talk to ${u} now (in front of whom, how close they stand, what they say first, what they do when they get nothing back), and Shared history.
+- Never write a passing state into the card: mood, where they are right now, what they are doing that day, injuries that heal within days, plans for the day. The game tracks those itself.
+- Use only facts the log or the card states. Add no causes, reasons, motives, feelings or details the log doesn't give (why someone came, what they had just finished, that something was unannounced). Check every fact you write against the rest of the card too: if the card says something happened before, don't write that it never did.
+- Read every line of the card against the log, not only the lines about the newest events. A line the log shows is no longer true gets changed wherever it is: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed.
+- PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. If you do change a PERSONALITY line, say in the reason which events show it.
+- If the entry for ${u} says they have not met and now they have, change its lines into an entry for someone they know: Wants, Hides, a Speech line that says what they do when they talk to ${u} now (in front of whom, how close they stand, what they say first, what they do when they get nothing back), and Shared history.
 
 ${sayItOnce(u)}
 
@@ -365,39 +366,104 @@ ${keepWhatMatters(u)}
 
 ${CHECKS}
 
-HOW TO WRITE IT
-- Keep the card's own format exactly: the same headings, bullet style, field labels (Wants:, Hides:, Speech:, Shared history:, Now:) and line layout. Keep every line you are not changing exactly as it is, in its place.
-- Edit lines, don't rewrite them. When a line needs a new fact, add it to that line or change only the words that are no longer true, and keep every other fact in the line in its own words. Remove a fact only when the log shows it is no longer true, and say which in the reason.
-- HISTORY is a dated list, earliest to most recent. Keep every existing line unchanged; add new events after them in date order. Write events, not what they meant. Most log lines don't belong in the card at all.
-- Add to a Shared history only events that changed things between the two. Most days add nothing there.
-- KNOWLEDGE uses: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation." Only add what they learned in the story.
-- RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's first line says what the character does now ("Now: ..."). Add an entry for someone new only if they are now a lasting part of this character's life.
-- Dates: write the story's named day and date the way the log writes them (for example "Day 3 - Monday 14 October"). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead ("clean since Day 3 - Monday 14 October"). Spoken lines in quotes keep their own words.
-- Keep the card's prose flat and plain, like the rest of the card: facts, behaviour, things said. No flourishes, no summing up, no interpretation.
-- Write what the character does, never what they don't do.
+HOW TO WRITE A CHANGE
+- To change part of a line: quote the words to change exactly in <find>, and give what replaces them in <new>. Every other word of the line stays as it is. Use this for any line longer than about thirty words. To add words at the end of a line, quote its last few words in <find> and repeat them in <new> with the addition.
+- To change a short line as a whole: give the whole line as it should read in <new>, without <find>. Keep every fact of the old line in its own words; change only the words that are no longer true.
+- To add a line: say which existing line it goes after, and write it with the same leading spaces, bullet and field label as the lines around it. In a dated list, new lines go after the last line, in date order.
+- Remove a line, or words from a line, only when the log shows they are no longer true or the card already says them elsewhere; say which in the reason.
+- Never write line numbers into the text.
+- KNOWLEDGE lines use: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation."
+- RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's Now line says what the character does now. Add an entry for someone new only if they are now a lasting part of this character's life.
+- Dates: write the story's named day and date the way the log writes them (for example "Day 3 - Monday 14 October"). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead. Spoken lines in quotes keep their own words.
+- Keep the card's prose flat and plain: facts, behaviour, things said. No flourishes, no summing up, no interpretation. Write what the character does, never what they don't do.`;
+}
+
+const CHANGE_FORMAT = `<change type="edit" line="57">
+<find>the exact words in line 57 to change</find>
+<new>what replaces them</new>
+<reason>which log lines this comes from</reason>
+</change>
+<change type="edit" line="12">
+<new>the whole short line as it should read</new>
+<reason>which log lines this comes from</reason>
+</change>
+<change type="add" after="80">
+<new>the new line</new>
+<reason>which log lines this comes from</reason>
+</change>
+<change type="remove" line="12">
+<reason>which log line shows it is no longer true, or which line already says it</reason>
+</change>`;
+
+export function systemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You update one character card for a long-running roleplay so it matches what has happened in the story. The roleplay model reads this card on every turn and treats it as the truth about the character. You get the card with numbered lines and a dated log of what happened to the character since the card was last updated. The log already holds only what the character did, saw or was told.
+
+You don't rewrite the card. You return a short list of changes to single lines. Every line you don't name stays exactly as it is.
+
+${updateRules(u)}
 
 WHAT TO RETURN
-For every section you change, return the whole new body of that section (everything under its heading, without the heading line), including every line you kept:
-<update>
-<heading>THE SECTION HEADING EXACTLY AS IN THE CARD</heading>
-<reason>One short line: which log lines this comes from.</reason>
-<text>
-the whole new section body
-</text>
-</update>
-Only update the sections listed under SECTIONS YOU MAY UPDATE. Leave out sections that need no change. Add any <conflict> lines after the updates. If nothing in the log changes this card, return only <none/> (and any <conflict> lines).
+One block per change, in this form:
+${CHANGE_FORMAT}
+Only change lines inside the sections listed under SECTIONS YOU MAY UPDATE. Most log lines change nothing on the card; a handful of changes is normal. Add any <conflict> lines after the changes. If nothing in the log changes this card, return only <none/> (and any <conflict> lines).
 At the very end, on its own line, write the newest story date in the log: <storydate>...</storydate>`;
+}
+
+/** "HISTORY (lines 58-68)" for each section the update may touch. */
+export function sectionSpans(text, ranges) {
+    const lines = String(text ?? '').split(/\r?\n/);
+    return ranges.map((r) => {
+        let end = r.end - 1;
+        while (end > r.start && !lines[end].trim()) end--;
+        return `${r.title} (lines ${r.start + 1}-${end + 1})`;
+    });
 }
 
 export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0 }) {
     const parts = [];
-    parts.push(`CHARACTER CARD: ${title}\n<card>\n${card}\n</card>`);
+    parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
     parts.push(`SECTIONS YOU MAY UPDATE: ${sections.join(', ')}`);
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN (the current situation; use them for what they know and where things stand, never copy a passing mood into the card):\n<trackers>\n${trackers}\n</trackers>`);
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
-    parts.push(`Update the card for ${title}. Return only the <update> blocks (or <none/>) and the <storydate> line.`);
+    parts.push(`List the changes for the card of ${title}. Return only the <change> blocks (or <none/>), any <conflict> lines and the <storydate> line.`);
+    return parts.join('\n\n');
+}
+
+// ---------------------------------------------------------------- fixing what the check found
+
+export function fixSystemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You proposed changes to one character card for a long-running roleplay. A checker compared them with the log and with the card and found problems. Fix them. The roleplay model reads this card on every turn and treats it as the truth about the character. Line numbers always refer to the card as it is now, before any change.
+
+${updateRules(u)}
+
+WHAT TO RETURN
+For each change the checker flagged, return one of these:
+- a corrected version, with op set to the change's number. It may change a different line or be a different kind of change (for example an edit of the line that already covers the event instead of a new line):
+${CHANGE_FORMAT.replace(/<change type/g, '<change op="3" type')}
+- <drop op="3"><reason>why it goes</reason></drop> when the change shouldn't be made at all (it repeats the card, it isn't in the log, it is a passing state).
+- <keep op="3"><reason>why the checker is wrong, quoting the log</reason></keep> when the checker is wrong and the change is right as it is.
+For each stale line the checker listed in a section you may update: a change without op that makes the line true again, with stale set to the line's number (<change stale="19" type="edit" line="19">). If the checker was wrong about the line, return nothing for it.
+Fix only what the checker found. The changes it didn't flag are kept as they are, so don't repeat them and don't add what they already add.`;
+}
+
+export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0 }) {
+    const parts = [];
+    parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
+    if (tokens) parts.push(sizeNote(tokens, limit));
+    parts.push(`SECTIONS YOU MAY UPDATE: ${sections.join(', ')}`);
+    parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
+    if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`);
+    if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
+    parts.push(`YOUR CHANGES:\n${ops.map(describeOp).join('\n\n')}`);
+    const found = [];
+    for (const p of problems) found.push(`#${p.id} ${KIND_WORD[p.kind] || p.kind.toUpperCase()}: ${p.text}`);
+    if (found.length) parts.push(`WHAT THE CHECKER FOUND IN YOUR CHANGES:\n${found.join('\n')}`);
+    if (stale.length) parts.push(`STALE LINES THE CHECKER FOUND (the log shows they are no longer true):\n${stale.map(x => `line ${x.line} (${x.label}): ${x.text}`).join('\n')}`);
+    parts.push('Fix the flagged changes and the stale lines. Return only <change>, <drop> and <keep> blocks.');
     return parts.join('\n\n');
 }
 
@@ -694,4 +760,539 @@ export function checkUpdate(kind, oldBody, newBody) {
     });
     if (long.length) warnings.push(`${long.length} added line${long.length === 1 ? ' is' : 's are'} over 70 words: "${long[0].trim().slice(0, 60)}…"`);
     return warnings;
+}
+
+// ---------------------------------------------------------------- change lists
+
+/** The card with every line numbered from 1, the way the model sees it: "57| - Now: ...". */
+export function numberCard(text) {
+    return String(text ?? '').split(/\r?\n/).map((l, i) => (l ? `${i + 1}| ${l}` : `${i + 1}|`)).join('\n');
+}
+
+const LINE_NO_RE = /^\s*\d{1,4}\s*\|[ \t]?/;
+
+/** Removes line numbers the model copied from the numbered card. */
+export function stripLineNumbers(text) {
+    return String(text ?? '').split('\n').map(l => l.replace(LINE_NO_RE, '')).join('\n');
+}
+
+function attrs(s) {
+    const out = {};
+    for (const m of String(s ?? '').matchAll(/([a-z]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>/]+))/gi)) out[m[1].toLowerCase()] = String(m[2] ?? m[3] ?? m[4] ?? '').trim();
+    return out;
+}
+
+function num(v) {
+    const n = parseInt(String(v ?? '').replace(/[^\d]/g, ''), 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+const TYPE_ALIASES = { edit: 'edit', change: 'edit', replace: 'edit', rewrite: 'edit', add: 'add', insert: 'add', append: 'add', remove: 'remove', delete: 'remove', cut: 'remove' };
+
+function stripThinking(reply) {
+    return String(reply ?? '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+}
+
+/**
+ * Reads a list of changes from the update or fix step.
+ * @returns {{ops: object[], drops: {ref: number, reason: string}[], keeps: {ref: number, reason: string}[], storyDate: string, conflicts: string[], none: boolean}}
+ */
+export function parseOps(reply) {
+    const text = stripThinking(reply);
+    const ops = [];
+    for (const m of text.matchAll(/<change\b([^>]*)>([\s\S]*?)<\/change>/gi)) {
+        const a = attrs(m[1]);
+        let type = TYPE_ALIASES[String(a.type || '').toLowerCase()];
+        if (!type) type = a.after !== undefined ? 'add' : null;
+        if (!type) continue;
+        const line = type === 'add' ? num(a.after ?? a.line) : num(a.line);
+        if (line === null) continue;
+        const body = m[2];
+        const newRaw = inner(body, 'new');
+        const findRaw = inner(body, 'find');
+        const textNew = newRaw === null ? '' : stripLineNumbers(newRaw.replace(/^\n+|\s+$/g, ''));
+        const find = findRaw === null ? null : stripLineNumbers(findRaw.trim());
+        if (type === 'edit' && find === null && !textNew.trim()) type = 'remove';
+        if (type === 'edit' && find !== null && !find) continue;
+        if (type === 'add' && !textNew.trim()) continue;
+        ops.push({ type, line, find: type === 'edit' ? find : null, text: type === 'remove' ? '' : textNew, reason: (inner(body, 'reason') || '').trim(), ref: num(a.op), stale: num(a.stale) });
+    }
+    const tagged = (tag) => [...text.matchAll(new RegExp(`<${tag}\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/${tag}>)`, 'gi'))]
+        .map(m => ({ ref: num(attrs(m[1]).op), reason: ((m[2] && inner(m[2], 'reason')) ?? m[2] ?? '').trim() }))
+        .filter(x => x.ref !== null);
+    const storyDate = (inner(text, 'storydate') || '').trim();
+    const conflicts = [...text.matchAll(/<conflict>([\s\S]*?)<\/conflict>/gi)].map(m => m[1].trim()).filter(Boolean);
+    return { ops, drops: tagged('drop'), keeps: tagged('keep'), storyDate, conflicts, none: !ops.length && /<none\s*\/?>/i.test(text) };
+}
+
+function normChars(s) {
+    const out = [];
+    const map = [];
+    let prevSpace = false;
+    for (let k = 0; k < s.length; k++) {
+        let ch = s[k];
+        if ('‘’ʼ′`'.includes(ch)) ch = '\'';
+        else if ('“”″'.includes(ch)) ch = '"';
+        else if ('—–‒−'.includes(ch)) ch = '-';
+        if (/\s/.test(ch)) {
+            if (prevSpace) continue;
+            ch = ' ';
+            prevSpace = true;
+        } else prevSpace = false;
+        out.push(ch.toLowerCase());
+        map.push(k);
+    }
+    return { text: out.join(''), map };
+}
+
+/** Finds quoted words in a line, forgiving curly quotes, dashes, spacing and case. @returns {{start: number, end: number}|null} */
+export function findLoose(hay, needle) {
+    const h = String(hay ?? '');
+    const n = String(needle ?? '');
+    if (!n.trim()) return null;
+    const exact = h.indexOf(n);
+    if (exact !== -1) return { start: exact, end: exact + n.length };
+    const H = normChars(h);
+    for (const t of [normChars(n.trim()).text, normChars(n.trim()).text.replace(/[.,;:!?]+$/, '')]) {
+        if (t.length < 3) continue;
+        const at = H.text.indexOf(t);
+        if (at !== -1) return { start: H.map[at], end: H.map[at + t.length - 1] + 1 };
+    }
+    return null;
+}
+
+/** "Now", "Shared history", "With her closest person" — the label before the colon, if the line has one. */
+export function fieldLabel(line) {
+    const m = String(line ?? '').match(/^\s*(?:[-*•]|\d+[.)])?\s*([A-Z][A-Za-z' ]{0,40}?):/);
+    return m ? m[1].trim().toLowerCase() : '';
+}
+
+function similarity(a, b) {
+    const x = sigWords(a);
+    const y = sigWords(b);
+    if (!x.size || !y.size) return 0;
+    return overlap(x, y) / Math.min(x.size, y.size);
+}
+
+const BULLET_RE = /^(\s*)(?:[-*•]|\d+[.)])\s/;
+
+/** Gives new bullet lines the indentation of the line they sit with when the model left it out. */
+function fitIndent(newLines, ref) {
+    const r = String(ref ?? '').match(BULLET_RE);
+    const indent = r ? r[1] : '';
+    if (!indent) return newLines;
+    return newLines.map(l => (/^(?:[-*•]|\d+[.)])\s/.test(l) ? indent + l : l));
+}
+
+function tidyLine(line) {
+    const lead = line.match(/^\s*/)[0];
+    return lead + line.slice(lead.length).replace(/ {2,}/g, ' ').replace(/\s+([.,;])/g, '$1').replace(/\s+$/, '');
+}
+
+/** If an edit names a line it doesn't fit but plainly fits the line next to it, the line number was off by one. */
+function retarget(lines, i, text) {
+    const first = String(text).split('\n')[0];
+    const lab = fieldLabel(first);
+    const sim = k => (k >= 0 && k < lines.length && lines[k].trim() ? similarity(lines[k], text) : -1);
+    const here = sim(i);
+    if (lab) {
+        if (fieldLabel(lines[i]) === lab) return i;
+        for (const k of [i - 1, i + 1]) if (k >= 0 && k < lines.length && fieldLabel(lines[k]) === lab && sim(k) > here) return k;
+    }
+    if (here >= 0.3) return i;
+    let best = i;
+    let bestSim = here;
+    for (const k of [i - 1, i + 1]) {
+        const v = sim(k);
+        if (v >= 0.6 && v > bestSim) {
+            best = k;
+            bestSim = v;
+        }
+    }
+    return best;
+}
+
+/**
+ * Places each change on the card: checks the line exists and sits in a section that may change, corrects
+ * off-by-one line numbers, finds quoted words, and works out the lines the change produces.
+ * @param {string} content the card
+ * @param {object[]} ops from parseOps (each with an id)
+ * @param {object[]} ranges the sections that may change
+ * @returns {object[]} the ops with index, label, kind, oldLine, result, and invalid/outside/moved when they apply
+ */
+export function resolveOps(content, ops, ranges) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const labels = lineLabels(content);
+    const kindAt = new Array(lines.length).fill('');
+    for (const r of sectionRanges(content)) for (let i = r.start; i < r.end; i++) kindAt[i] = r.kind;
+    const allowed = new Set();
+    const headings = new Set();
+    for (const r of ranges) {
+        headings.add(r.start);
+        for (let i = r.start + 1; i < r.end; i++) allowed.add(i);
+    }
+    const taken = new Map();
+    return ops.map((op0) => {
+        const op = { ...op0, invalid: '', outside: false, moved: op0.moved || null, result: [] };
+        let i = op.line - 1;
+        if (i < 0 || i >= lines.length) {
+            op.invalid = `The card has no line ${op.line}.`;
+            return op;
+        }
+        if (op.type === 'edit' && op.find === null) {
+            const j = retarget(lines, i, op.text);
+            if (j !== i) {
+                op.moved = { from: op.moved?.from ?? op.line, to: j + 1 };
+                i = j;
+            }
+        } else if (op.type === 'edit' && !findLoose(lines[i], op.find)) {
+            const j = [i - 1, i + 1].find(k => k >= 0 && k < lines.length && findLoose(lines[k], op.find));
+            if (j !== undefined) {
+                op.moved = { from: op.moved?.from ?? op.line, to: j + 1 };
+                i = j;
+            }
+        }
+        op.index = i;
+        op.line = i + 1;
+        op.label = labels[i] || '';
+        op.kind = kindAt[i] || '';
+        op.oldLine = lines[i];
+        if (op.type !== 'add' && !lines[i].trim()) {
+            op.invalid = `Line ${op.line} is blank.`;
+            return op;
+        }
+        op.outside = op.type === 'add' ? !(allowed.has(i) || headings.has(i)) : !allowed.has(i);
+        if (op.type !== 'add') {
+            if (taken.has(i)) {
+                op.invalid = `Change #${taken.get(i)} already changes line ${op.line}.`;
+                return op;
+            }
+            taken.set(i, op.id);
+        }
+        if (op.type === 'remove') return op;
+        if (op.type === 'edit' && op.find !== null) {
+            const at = findLoose(lines[i], op.find);
+            if (!at) {
+                op.invalid = `The words to change are not in line ${op.line}: "${op.find.slice(0, 100)}"`;
+                return op;
+            }
+            op.result = [tidyLine(lines[i].slice(0, at.start) + op.text + lines[i].slice(at.end))];
+        } else if (op.type === 'edit') {
+            op.result = fitIndent(op.text.split('\n'), lines[i]);
+        } else {
+            // A new line after "- Shared history:" belongs with the indented lines under it.
+            const next = lines[i + 1];
+            const ref = /:\s*$/.test(lines[i]) && next && next.match(BULLET_RE)?.[1].length > (lines[i].match(/^\s*/)[0].length) ? next : lines[i];
+            op.result = fitIndent(op.text.split('\n'), ref);
+        }
+        if (op.type === 'edit' && op.result.join('\n') === lines[i]) op.invalid = 'It leaves the line as it is.';
+        return op;
+    });
+}
+
+/** The card with the given changes made. Lines are found by their place in the card as it was, so order doesn't matter. */
+export function applyOps(content, ops) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const replace = new Map();
+    const after = new Map();
+    for (const op of ops) {
+        if (op.invalid || !Number.isInteger(op.index)) continue;
+        if (op.type === 'add') {
+            if (!after.has(op.index)) after.set(op.index, []);
+            after.get(op.index).push(...op.result);
+        } else if (!replace.has(op.index)) {
+            replace.set(op.index, op.type === 'remove' ? [] : op.result);
+        }
+    }
+    const out = [];
+    lines.forEach((l, i) => {
+        out.push(...(replace.has(i) ? replace.get(i) : [l]));
+        if (after.has(i)) out.push(...after.get(i));
+    });
+    return out.join('\n');
+}
+
+/** One change as the check and fix steps see it. */
+export function describeOp(op) {
+    const where = op.label ? ` (${op.label})` : '';
+    const head = op.type === 'add' ? `#${op.id} ADD after line ${op.line}${where}`
+        : op.type === 'remove' ? `#${op.id} REMOVE line ${op.line}${where}` : `#${op.id} CHANGE line ${op.line}${where}`;
+    const out = [head];
+    if (op.type === 'add') out.push(`AFTER: ${String(op.oldLine ?? '').trim()}`);
+    else out.push(`OLD: ${String(op.oldLine ?? '').trim()}`);
+    if (op.type === 'edit' && op.find !== null && op.find !== undefined) {
+        out.push(`REPLACES THE WORDS: "${op.find}"`, `WITH: "${op.text}"`);
+    } else if (op.type !== 'remove') out.push(`NEW: ${(op.result || []).map(l => l.trim()).join('\n')}`);
+    if (op.reason) out.push(`REASON: ${op.reason}`);
+    return out.join('\n');
+}
+
+// ---------------------------------------------------------------- the log, cleaned for the update
+
+const DAY_START = /(?:Day\s+\d|undated|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Lasting)/;
+
+/**
+ * Log lines as the update step gets them: lines the model ran together are split, clock times after the date are
+ * dropped (the date is enough, and the update copied them), and exact repeats are left out.
+ */
+export function normalizeLogLines(lines) {
+    const split = [];
+    for (const raw of lines || []) {
+        const parts = String(raw).split(new RegExp(`(?<=[.!?")\\]])\\s*-\\s+(?=${DAY_START.source})`));
+        parts.forEach((p, k) => split.push(k === 0 ? p : `- ${p}`));
+    }
+    const seen = new Set();
+    const out = [];
+    for (const raw of split) {
+        let l = String(raw).trim();
+        if (!l) continue;
+        if (!l.startsWith('- ')) l = `- ${l.replace(/^[-*•]\s*/, '')}`;
+        // "- Day 7, ~3:42 PM: x" → "- Day 7: x"; "- Day 7 - Friday 23 May, 3:12 PM: x" → "- Day 7 - Friday 23 May: x"
+        l = l.replace(/^- ([^:\n]*?),?\s*(?:at\s+)?~?\s*\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*:/, (m, date) => (date.trim() ? `- ${date.trim()}:` : '- undated:'));
+        const key = l.replace(/^- [^:]*:\s*/, '').toLowerCase().replace(/\s+/g, ' ');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(l);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- checking a list of changes
+
+export const KIND_WORD = { lost: 'LOST', unsupported: 'UNSUPPORTED', wrong: 'WRONG', twice: 'TWICE', passing: 'PASSING', placement: 'COULD NOT BE PLACED' };
+const KIND_ALIASES = { lost: 'lost', missing: 'lost', dropped: 'lost', unsupported: 'unsupported', invented: 'unsupported', added: 'unsupported', inferred: 'unsupported', wrong: 'wrong', contradiction: 'wrong', contradicts: 'wrong', twice: 'twice', repeat: 'twice', repeats: 'twice', duplicate: 'twice', passing: 'passing', temporary: 'passing' };
+
+export function opsCheckSystemPrompt(userName, { stale = true } = {}) {
+    const u = userName || 'the player character';
+    return `You check proposed changes to a character card for a long-running roleplay. You don't write changes; you only report problems. You get the card with numbered lines, the log of what happened that the changes were written from (and the game's tracker rows, if any), and the list of changes.
+
+Compare each change with the log and with the rest of the card:
+- LOST: an edit or removal drops a fact from the old line while the log doesn't show that fact stopped being true, and the card doesn't state it anywhere else.
+- UNSUPPORTED: the new text states something neither the log, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early).
+- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere.
+- TWICE: the new text repeats something the card already says on another line (give that line's number), or another change already adds it. Anything involving ${u} belongs only in the entry for ${u} under RELATIONSHIPS, never in HISTORY or KNOWLEDGE.
+- PASSING: the new text writes a passing state into the card: a mood, where someone is right now, what they are doing that day.
+${stale ? `
+Then read every line of the card against the log and list the lines the log shows are no longer true and that none of the changes fix: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed, a belief that turned out false. Only lines the log clearly contradicts.
+` : ''}
+Quote words exactly. One tag per problem:
+<problem change="3" kind="lost">the words, then -> what is wrong</problem>${stale ? `
+<stale line="19">the words that are no longer true -> what the log shows now, with the date</stale>` : ''}
+kind is one of: lost, unsupported, wrong, twice, passing.
+If there are no problems${stale ? ' and no stale lines' : ''}, reply with exactly: <ok/>`;
+}
+
+export function opsCheckUserPrompt({ card, title, ops, log, trackers = '', only = null }) {
+    const ids = only ? only.map(o => `#${o.id}`) : [];
+    return [
+        `CHARACTER CARD AS IT IS NOW: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`,
+        `WHAT HAPPENED (the log the changes were written from, oldest first):\n<log>\n${(log || []).join('\n')}\n</log>`,
+        ...(trackers ? [`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`] : []),
+        `PROPOSED CHANGES:\n${ops.map(describeOp).join('\n\n')}`,
+        only ? `Check only ${ids.length === 1 ? `change ${ids[0]}` : `changes ${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]}`}; the others are listed so you can see what else the card gets. Report every problem in ${ids.length === 1 ? 'it' : 'them'}, or <ok/>.` : 'Report every problem, or <ok/>.',
+    ].join('\n\n');
+}
+
+/** @returns {{problems: {id: number|null, kind: string, text: string}[], stale: {line: number, text: string}[]} | null} null when the reply has nothing readable */
+export function parseOpsCheck(reply) {
+    const text = stripThinking(reply);
+    const problems = [];
+    const stale = [];
+    for (const m of text.matchAll(/<problem\b([^>]*)>([\s\S]*?)<\/problem>/gi)) {
+        const a = attrs(m[1]);
+        const t = m[2].trim();
+        if (!t) continue;
+        problems.push({ id: num(a.change ?? a.op ?? a.id), kind: KIND_ALIASES[String(a.kind || '').toLowerCase()] || 'wrong', text: t });
+    }
+    for (const m of text.matchAll(/<stale\b([^>]*)>([\s\S]*?)<\/stale>/gi)) {
+        const line = num(attrs(m[1]).line);
+        const t = m[2].trim();
+        if (line !== null && t) stale.push({ line, text: t });
+    }
+    if (!problems.length && !stale.length && !/<ok\s*\/?>/i.test(text)) return null;
+    return { problems, stale };
+}
+
+// ---------------------------------------------------------------- warnings for one change
+
+const CLOCK_RE = /~?\s?\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*(?:[AaPp]\.[Mm]\.|[AaPp][Mm]\b))?(?!\d)|\b(?:1[0-2]|0?[1-9])\s*(?:[AaPp]\.[Mm]\.|[AaPp][Mm]\b)/g;
+
+/** Clock times outside quoted speech. */
+export function clockTimes(text) {
+    const found = new Set();
+    for (const line of String(text ?? '').split('\n')) {
+        const unquoted = line.replace(/"[^"]*"|“[^”]*”/g, ' ');
+        for (const m of unquoted.matchAll(CLOCK_RE)) found.add(m[0].replace(/^~?\s?/, '').trim());
+    }
+    return [...found];
+}
+
+const TERM_STOP = new Set(['the', 'she', 'he', 'they', 'her', 'his', 'hers', 'him', 'it', 'its', 'a', 'an', 'and', 'but', 'since', 'after', 'before', 'when', 'then', 'now', 'wants', 'hides', 'speech', 'knows', 'shared', 'history', 'does', 'not', 'that', 'this', 'there', 'what', 'who', 'with', 'in', 'on', 'at', 'for', 'from', 'of', 'to', 'as', 'by', 'i', 'if', 'or', 'so', 'yes', 'no', 'believes', 'suspects', 'learned', 'told', 'day', 'as it grows', 'underneath', 'holds', 'until', 'only', 'once', 'all', 'both', 'one', 'some', 'each', 'every', 'how', 'why', 'where', 'you', 'we', 'my', 'me', 'our', 'your', 'okay', 'yeah']);
+
+/** Names and numbers an edited line had that its new text no longer has. */
+export function droppedTerms(oldLine, newText) {
+    const terms = [];
+    const seen = new Set();
+    for (const m of String(oldLine ?? '').matchAll(/\b\p{Lu}[\p{L}'’-]*|\b\d+(?:[.,:]\d+)?\b/gu)) {
+        const t = m[0].replace(/['’]s$/, '');
+        if (t.length < 2 && !/\d/.test(t)) continue;
+        if (TERM_STOP.has(t.toLowerCase()) || seen.has(t.toLowerCase())) continue;
+        seen.add(t.toLowerCase());
+        const re = new RegExp(`(^|[^\\p{L}\\p{N}])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu');
+        if (!re.test(String(newText ?? ''))) terms.push(t);
+    }
+    return terms;
+}
+
+const words = t => String(t ?? '').split(/\s+/).filter(Boolean).length;
+
+/** The sentence of a line that shares the most words with another text, for showing where a repeat is. */
+function closestSentence(line, text) {
+    const target = sigWords(text);
+    let best = '';
+    let bestN = -1;
+    for (const s of String(line).split(/(?<=[.!?;])\s+/)) {
+        const n = overlap(sigWords(s), target);
+        if (n > bestN) {
+            best = s;
+            bestN = n;
+        }
+    }
+    return best.trim();
+}
+
+/**
+ * New lines of a change that say much the same as another line of the card (after the ticked changes).
+ * Similarity the old line already had is not counted: that repeat was there before.
+ * @returns {{where: string, excerpt: string}[]}
+ */
+export function opRepeats(op, cardAfter, ignoreNames = []) {
+    if (op.type === 'remove' || op.invalid) return [];
+    const exclude = new Set([...DATE_WORDS, ...ignoreNames.flatMap(n => String(n).toLowerCase().split(/\s+/))]);
+    const lines = String(cardAfter ?? '').split(/\r?\n/);
+    const labels = lineLabels(cardAfter);
+    const sigs = lines.map(l => sigWords(l, exclude));
+    const own = new Set(op.result.map(l => l.trim()));
+    const oldSig = op.type === 'edit' ? sigWords(op.oldLine, exclude) : new Set();
+    const out = [];
+    for (const added of op.result) {
+        const a = sigWords(added, exclude);
+        if (a.size < 4) continue;
+        let best = null;
+        lines.forEach((l, i) => {
+            if (!l.trim() || own.has(l.trim())) return;
+            const b = sigs[i];
+            if (b.size < 4) return;
+            const shared = overlap(a, b);
+            const ratio = shared / Math.min(a.size, b.size);
+            if (shared < 4 || ratio < 0.6) return;
+            if (oldSig.size && overlap(oldSig, b) / Math.min(oldSig.size, b.size) >= 0.6) return;
+            if (!best || ratio > best.ratio) best = { ratio, i };
+        });
+        if (best) out.push({ where: labels[best.i], excerpt: closestSentence(lines[best.i], added) });
+    }
+    return out;
+}
+
+/**
+ * Warnings for one change, and whether it should come unticked.
+ * @param {object} op a resolved op
+ * @param {{personaNames?: string[]}} opts
+ * @returns {{warnings: string[], untick: boolean}}
+ */
+export function opWarnings(op, { personaNames = [] } = {}) {
+    const warnings = [];
+    let untick = false;
+    if (op.invalid) return { warnings: [op.invalid], untick: true };
+    if (op.moved) warnings.push(`The model said line ${op.moved.from}; it fits line ${op.moved.to}, so it was moved there.`);
+    if (op.outside) {
+        warnings.push('Outside the sections you ticked.');
+        untick = true;
+    }
+    if (op.kind === 'personality' && op.type !== 'remove') {
+        warnings.push('Personality change: check the reason before accepting.');
+        untick = true;
+    }
+    if (op.type === 'remove') return { warnings, untick };
+    const newText = op.result.join('\n');
+    const oldText = op.type === 'edit' ? op.oldLine : '';
+    const who = (op.kind === 'history' || op.kind === 'knowledge') && !mentionsAny(oldText, personaNames) ? personaNames.find(n => mentionsAny(newText, [n])) : null;
+    if (who) {
+        warnings.push(`Mentions ${who} in ${op.kind === 'history' ? 'HISTORY' : 'KNOWLEDGE'}; anything involving ${who} belongs in their entry under RELATIONSHIPS.`);
+        untick = true;
+    }
+    const oldClock = new Set(clockTimes(oldText));
+    const clock = clockTimes(newText).filter(t => !oldClock.has(t));
+    if (clock.length) warnings.push(`Clock time: ${clock.join(', ')}. The date is enough.`);
+    const oldRel = new Set(relativeTimeWords(oldText));
+    const rel = relativeTimeWords(newText).filter(t => !oldRel.has(t));
+    if (rel.length) warnings.push(`Counts from a day: ${rel.join(', ')}. Use the named date instead.`);
+    const check = newText.match(/\[check:([^\]]*)\]/i);
+    if (check && !/\[check:/i.test(oldText)) warnings.push(`Unsure who did it, check before saving: "${check[1].trim()}"`);
+    if (op.type === 'edit' && op.find === null) {
+        const gone = droppedTerms(oldText, newText);
+        if (gone.length) warnings.push(`No longer says: ${gone.slice(0, 8).join(', ')}${gone.length > 8 ? '…' : ''}`);
+    }
+    const nw = words(newText);
+    const ow = words(oldText);
+    if (op.type === 'add' && nw > 70) warnings.push(`The new line is ${nw} words long.`);
+    if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) warnings.push(`The line grows from ${ow} to ${nw} words.`);
+    return { warnings, untick };
+}
+
+/** Word-level diff. @returns {{type: 'same'|'add'|'del', text: string}[]} */
+export function wordDiff(oldText, newText) {
+    const a = String(oldText ?? '').split(/(\s+)/).filter(Boolean);
+    const b = String(newText ?? '').split(/(\s+)/).filter(Boolean);
+    const n = a.length;
+    const m = b.length;
+    if (n * m > 2_000_000) return [{ type: 'del', text: oldText }, { type: 'add', text: newText }];
+    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+    const out = [];
+    const push = (type, text) => {
+        const last = out[out.length - 1];
+        if (last && last.type === type) last.text += text;
+        else out.push({ type, text });
+    };
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+        if (a[i] === b[j]) {
+            push('same', a[i]);
+            i++;
+            j++;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) push('del', a[i++]);
+        else push('add', b[j++]);
+    }
+    while (i < n) push('del', a[i++]);
+    while (j < m) push('add', b[j++]);
+    // A space between two changed words belongs to the change, so "him at all" reads as one struck phrase.
+    const merged = [];
+    out.forEach((p, k) => {
+        if (p.type === 'same' && !p.text.trim() && k > 0 && k < out.length - 1 && out[k - 1].type !== 'same' && out[k + 1].type !== 'same') {
+            merged.push({ type: 'del', text: p.text }, { type: 'add', text: p.text });
+        } else merged.push({ ...p });
+    });
+    // Old words first, then new words, for each changed stretch.
+    const result = [];
+    let dels = '';
+    let adds = '';
+    const flush = () => {
+        if (dels) result.push({ type: 'del', text: dels });
+        if (adds) result.push({ type: 'add', text: adds });
+        dels = '';
+        adds = '';
+    };
+    for (const p of merged) {
+        if (p.type === 'same') {
+            flush();
+            result.push(p);
+        } else if (p.type === 'del') dels += p.text;
+        else adds += p.text;
+    }
+    flush();
+    return result;
 }

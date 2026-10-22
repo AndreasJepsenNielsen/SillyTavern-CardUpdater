@@ -1,13 +1,15 @@
 // Card Updater for SillyTavern.
-// Drafts updates to character cards from what has happened in the chat. You review every section
-// before anything is saved, and the previous version is kept in the chat so it can be restored.
+// Drafts updates to character cards from what has happened in the chat, as a list of changes to single lines.
+// Each change is checked against the story and can be ticked on its own; the previous version is kept in the chat.
 
 import { looksLikeCard, nameVariants, titleCase, mentionsAny, stringHash } from './cardparse.js';
 import {
     UPDATABLE, updatableRanges, sectionRanges, rangeBody, applyReplacements, canonPointBody, storyItems, filterForCharacter,
     chunkItems, trackerLines, storyDateFrom, logSystemPrompt, logUserPrompt, parseLog, systemPrompt, userPrompt, parseReply,
     matchRange, lineDiff, checkUpdate, markNewLines, stripNewMarks, lostOriginalLines, tightenSystemPrompt, tightenUserPrompt,
-    checkSystemPrompt, checkUserPrompt, parseCheck, findRepeats,
+    checkSystemPrompt, checkUserPrompt, parseCheck, findRepeats, lineLabels,
+    numberCard, sectionSpans, parseOps, resolveOps, applyOps, normalizeLogLines, opsCheckSystemPrompt, opsCheckUserPrompt,
+    parseOpsCheck, fixSystemPrompt, fixUserPrompt, opWarnings, opRepeats, wordDiff,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
@@ -29,6 +31,7 @@ const DEFAULTS = Object.freeze({
     checkThinking: 'medium',
     updateModel: '', // model for updating and tightening; empty = the same as for reading
     checkDrafts: true,
+    fixDrafts: true, // send what the check finds back for fixing
     cardLimit: 5000, // tokens; the template's limit for a lead
     profileId: '',
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
@@ -500,31 +503,407 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter) 
         return;
     }
 
-    // Step 2: update the card from the new log lines.
-    const tick2 = setInterval(() => status.text(`${card.title} (${counter}): updating the card from ${newLines.length} log lines… ${elapsed()}`), 1000);
-    status.text(`${card.title} (${counter}): updating the card from ${newLines.length} log lines…`);
+    // Step 2: the model lists changes to single lines of the numbered card.
+    const job = {
+        card, content, ranges,
+        numbered: numberCard(content),
+        sections: sectionSpans(content, ranges),
+        log: normalizeLogLines(newLines),
+        trackers: trackerLines(c.chat, card.names),
+        storyDate: storyDateFrom(c.chat),
+        tokens: approxTokens(content.length),
+        limit: Number(s.cardLimit) || 0,
+    };
+    const progress = what => ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): ${what}… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`);
+    status.text(`${card.title} (${counter}): updating the card from ${job.log.length} log lines…`);
     let reply;
     try {
         reply = await sendWithRetry(s, systemPrompt(c.name1), userPrompt({
-            card: content, title: card.title, sections: ranges.map(r => r.title), log: newLines,
-            trackers: trackerLines(c.chat, card.names), storyDate: storyDateFrom(c.chat),
-            tokens: approxTokens(content.length), limit: Number(s.cardLimit) || 0,
+            card: job.numbered, title: card.title, sections: job.sections, log: job.log,
+            trackers: job.trackers, storyDate: job.storyDate, tokens: job.tokens, limit: job.limit,
         }), {
             signal,
             reasoning: s.updateThinking,
             model: s.updateModel,
-            onProgress: ({ contentChars, reasoningChars }) => status.text(`${card.title} (${counter}): updating the card… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`),
+            onProgress: progress('updating the card'),
             onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
         });
     } catch (err) {
-        clearInterval(tick2);
         console.error(LOG, err);
         block.html(`${cardHead(card, elapsed())}${errorHtml('Updating the card failed', err, signal)}<div class="cu-muted">The log is saved, so the next run goes straight to this step.</div>${logDetails(newLines)}`);
         return;
     }
-    clearInterval(tick2);
-    const parsed = parseReply(reply);
-    await renderReview(card, content, ranges, parsed, storyDateFrom(c.chat) || parsed.storyDate, block, elapsed, reply, { key: plan.key, appliedTo: log.lines.length, newLines }, { edited, status, counter, signal, s });
+    const parsed = parseOps(reply);
+    const ops = resolveOps(content, parsed.ops.map((o, k) => ({ ...o, id: k + 1, source: 'update' })), ranges);
+
+    // Step 3: check the changes against the log and the card, fix what the check finds, check the fixes.
+    let result;
+    try {
+        result = await checkAndFix(job, ops, { s, status, counter, signal, elapsed, progress });
+    } catch (err) {
+        block.html(`${cardHead(card, elapsed())}${errorHtml('Checking failed', err, signal)}`);
+        return;
+    }
+    result.raws.unshift(['Model reply', reply]);
+    renderOpsReview(job, result, parsed, block, { took: elapsed, logInfo: { key: plan.key, appliedTo: log.lines.length, newLines }, edited });
+}
+
+/**
+ * The check pass over a list of changes, then the fix step for what it found, then a check of the fixes.
+ * @returns {Promise<{ops: object[], dropped: object[], stale: object[], general: object[], check: object, fix: object, recheck: object, conflicts: string[], raws: [string, string][]}>}
+ */
+async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed, progress }) {
+    const c = ctx();
+    const title = job.card.title;
+    const out = { ops: firstOps, dropped: [], stale: [], general: [], check: { ran: false }, fix: { ran: false }, recheck: { ran: false }, conflicts: [], raws: [] };
+    const live = firstOps.filter(op => !op.invalid);
+    if (!s.checkDrafts || !live.length) return out;
+    const say = what => status?.text(`${title} (${counter}): ${what}… ${elapsed()}`);
+
+    say('checking the changes');
+    let found;
+    try {
+        const reply = await sendWithRetry(s, opsCheckSystemPrompt(c.name1), opsCheckUserPrompt({ card: job.numbered, title, ops: live, log: job.log, trackers: job.trackers }), {
+            signal, reasoning: s.checkThinking, onProgress: progress('checking the changes'),
+        });
+        out.raws.push(['Check reply', reply]);
+        found = parseOpsCheck(reply);
+        out.check = found ? { ran: true, problems: found.problems.length, staleFound: found.stale.length } : { ran: true, failed: 'The check reply could not be read.' };
+    } catch (err) {
+        if (signal?.aborted) throw err;
+        console.error(LOG, err);
+        out.check = { ran: true, failed: err?.message || String(err) };
+        return out;
+    }
+    if (!found) return out;
+    for (const p of found.problems) {
+        const op = live.find(o => o.id === p.id);
+        if (op) (op.found ||= []).push({ kind: p.kind, text: p.text });
+        else out.general.push(p);
+    }
+    const lines = job.content.split(/\r?\n/);
+    const labels = lineLabels(job.content);
+    const allowed = new Set();
+    for (const r of job.ranges) for (let i = r.start + 1; i < r.end; i++) allowed.add(i);
+    const touched = new Set(live.filter(o => o.type !== 'add').map(o => o.index));
+    const staleSeen = new Set();
+    out.stale = found.stale
+        .filter(x => x.line >= 1 && x.line <= lines.length && lines[x.line - 1].trim() && !touched.has(x.line - 1) && !staleSeen.has(x.line) && staleSeen.add(x.line))
+        .map(x => ({ line: x.line, text: x.text, label: labels[x.line - 1], quote: lines[x.line - 1].trim(), allowed: allowed.has(x.line - 1) }));
+    out.check.staleFound = out.stale.length;
+
+    // Changes that couldn't be placed (quoted words not in the line, no such line) can be fixed too.
+    const broken = firstOps.filter(o => o.invalid && /not in line|has no line|is blank/.test(o.invalid));
+    for (const op of broken) op.found = [{ kind: 'placement', text: op.invalid }];
+    const flagged = [...live.filter(op => op.found?.length), ...broken];
+    const fixable = out.stale.filter(x => x.allowed);
+    if (!s.fixDrafts || (!flagged.length && !fixable.length)) return out;
+
+    say(`fixing ${[flagged.length ? `${flagged.length} change${flagged.length === 1 ? '' : 's'}` : '', fixable.length ? `${fixable.length} stale line${fixable.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')}`);
+    let fixReply;
+    try {
+        fixReply = await sendWithRetry(s, fixSystemPrompt(c.name1), fixUserPrompt({
+            card: job.numbered, title, sections: job.sections, log: job.log, trackers: job.trackers, storyDate: job.storyDate,
+            ops: [...live, ...broken].sort((a, b) => a.id - b.id), problems: flagged.flatMap(op => op.found.map(f => ({ id: op.id, ...f }))), stale: fixable,
+            tokens: job.tokens, limit: job.limit,
+        }), { signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('fixing what the check found') });
+        out.raws.push(['Fix reply', fixReply]);
+    } catch (err) {
+        if (signal?.aborted) throw err;
+        console.error(LOG, err);
+        out.fix = { ran: true, failed: err?.message || String(err) };
+        return out;
+    }
+    const fx = parseOps(fixReply);
+    out.conflicts.push(...fx.conflicts);
+    const summary = { ran: true, fixed: 0, dropped: 0, kept: 0, staleFixed: 0 };
+    let ops = [...firstOps];
+    for (const d of fx.drops) {
+        const op = ops.find(o => o.id === d.ref && !o.dropped);
+        if (!op) continue;
+        op.dropped = d.reason || 'Dropped after the check.';
+        summary.dropped++;
+    }
+    for (const k of fx.keeps) {
+        const op = ops.find(o => o.id === k.ref && !o.dropped);
+        if (!op || !op.found?.length) continue;
+        op.disputed = k.reason || 'The updater says the change is right as it is.';
+        summary.kept++;
+    }
+    let nextId = Math.max(0, ...ops.map(o => o.id)) + 1;
+    const revisedIds = new Set();
+    for (const raw of fx.ops) {
+        const target = raw.ref !== null ? ops.find(o => o.id === raw.ref) : null;
+        if (target) {
+            if (target.dropped || revisedIds.has(target.id)) continue;
+            const next = { ...raw, id: target.id, source: target.source, fixed: true, firstFound: target.found || [], firstText: target.type === 'remove' ? '' : target.result.join('\n'), firstType: target.type };
+            delete next.ref;
+            ops[ops.indexOf(target)] = next;
+            revisedIds.add(target.id);
+            summary.fixed++;
+        } else if (raw.ref === null) {
+            const id = nextId++;
+            ops.push({ ...raw, id, source: 'stale', staleFor: raw.stale ?? (raw.type === 'add' ? null : raw.line) });
+            revisedIds.add(id);
+            summary.staleFixed++;
+        }
+    }
+    out.fix = summary;
+    out.dropped = ops.filter(o => o.dropped);
+    // Place every change again together, so two changes to one line are caught.
+    ops = resolveOps(job.content, ops.filter(o => !o.dropped), job.ranges);
+    out.ops = ops;
+    for (const x of out.stale) {
+        const by = ops.find(o => !o.invalid && o.source === 'stale' && (o.staleFor === x.line || (o.type !== 'add' && o.index === x.line - 1)));
+        if (by) x.fixedBy = by.id;
+    }
+
+    const recheck = ops.filter(o => revisedIds.has(o.id) && !o.invalid);
+    if (!recheck.length) return out;
+    say('checking the fixes');
+    try {
+        const reply = await sendWithRetry(s, opsCheckSystemPrompt(c.name1, { stale: false }), opsCheckUserPrompt({
+            card: job.numbered, title, ops: ops.filter(o => !o.invalid), log: job.log, trackers: job.trackers, only: recheck,
+        }), { signal, reasoning: s.checkThinking, onProgress: progress('checking the fixes') });
+        out.raws.push(['Check reply for the fixes', reply]);
+        const again = parseOpsCheck(reply);
+        if (!again) {
+            out.recheck = { ran: true, failed: 'The check reply could not be read.' };
+            return out;
+        }
+        let n = 0;
+        for (const p of again.problems) {
+            const op = recheck.find(o => o.id === p.id);
+            if (!op) continue;
+            (op.found ||= []).push({ kind: p.kind, text: p.text });
+            n++;
+        }
+        out.recheck = { ran: true, problems: n, checked: recheck.length };
+    } catch (err) {
+        if (signal?.aborted) throw err;
+        console.error(LOG, err);
+        out.recheck = { ran: true, failed: err?.message || String(err) };
+    }
+    return out;
+}
+
+const TYPE_TEXT = { edit: 'Change', add: 'Add', remove: 'Remove' };
+
+/** The changed words of an edit, with long unchanged stretches shortened. */
+function wordDiffHtml(oldLine, newLine) {
+    const parts = wordDiff(oldLine, newLine);
+    const shorten = (t) => {
+        const w = t.split(/(\s+)/);
+        const count = w.filter(x => x.trim()).length;
+        if (count <= 24) return esc(t);
+        const keep = (arr, n, fromEnd) => {
+            const out = [];
+            let seen = 0;
+            const seq = fromEnd ? [...arr].reverse() : arr;
+            for (const x of seq) {
+                out.push(x);
+                if (x.trim() && ++seen >= n) break;
+            }
+            return (fromEnd ? out.reverse() : out).join('');
+        };
+        return `${esc(keep(w, 9, false))}<span class="cu-skip"> … </span>${esc(keep(w, 9, true))}`;
+    };
+    const oldHtml = parts.filter(p => p.type !== 'add').map(p => (p.type === 'del' ? `<span class="cu-wdel">${esc(p.text)}</span>` : shorten(p.text))).join('');
+    const newHtml = parts.filter(p => p.type !== 'del').map(p => (p.type === 'add' ? `<span class="cu-wadd">${esc(p.text)}</span>` : shorten(p.text))).join('');
+    return `<div class="cu-line-old">− ${oldHtml}</div><div class="cu-line-new">+ ${newHtml}</div>`;
+}
+
+function opDiffHtml(op) {
+    if (op.type === 'remove') return `<div class="cu-del">− ${esc(String(op.oldLine ?? '').trim())}</div>`;
+    if (op.type === 'add') {
+        const anchor = String(op.oldLine ?? '').trim();
+        return `<div class="cu-muted">after: ${esc(anchor.length > 90 ? `${anchor.slice(0, 90)}…` : anchor)}</div>${op.result.map(l => `<div class="cu-add">+ ${esc(l)}</div>`).join('')}`;
+    }
+    return wordDiffHtml(op.oldLine, op.result.join('\n'));
+}
+
+function opHead(op) {
+    if (op.kind === 'canon') return 'Canon point';
+    const where = op.type === 'add' ? `after line ${op.line}` : `line ${op.line}`;
+    return `${TYPE_TEXT[op.type]} ${where}`;
+}
+
+const FOUND_TEXT = { lost: 'Lost', unsupported: 'Not in the log', wrong: 'Wrong', twice: 'Said twice', passing: 'Passing state', placement: 'Could not be placed' };
+
+function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) {
+    const { card, content } = job;
+    const tookText = () => (typeof took === 'function' ? took() : took);
+    const personaNames = nameVariants(ctx().name1 || '');
+    const ignoreNames = [...(card.names || []), ...personaNames];
+    const items = result.ops.filter(op => op.invalid !== 'It leaves the line as it is.').map((op) => {
+        const w = opWarnings(op, { personaNames });
+        const problems = (op.found || []).length > 0;
+        return { op, baseWarnings: w.warnings, accept: !op.invalid && !w.untick && !problems };
+    });
+    items.sort((a, b) => (a.op.index ?? 1e9) - (b.op.index ?? 1e9) || (a.op.type === 'add') - (b.op.type === 'add') || a.op.id - b.op.id);
+
+    // The canon point says how far the card has been updated.
+    const canon = sectionRanges(content).find(r => r.kind === 'canon' && !r.inline);
+    const lines = content.split(/\r?\n/);
+    if (canon && job.storyDate) {
+        let i = canon.start + 1;
+        while (i < canon.end && !lines[i].trim()) i++;
+        if (i < canon.end) {
+            const next = canonPointBody(lines[i], job.storyDate);
+            if (next !== lines[i].trim() && !result.ops.some(o => !o.invalid && o.type !== 'add' && o.index === i)) {
+                items.push({ op: { id: 'canon', type: 'edit', kind: 'canon', label: canon.title, index: i, line: i + 1, oldLine: lines[i], result: [lines[i].match(/^\s*/)[0] + next], reason: `Marks the card as updated to ${job.storyDate}.`, find: null }, baseWarnings: [], accept: true });
+            }
+        }
+    }
+
+    const stale = result.stale.filter(x => !x.fixedBy);
+    const outdated = [
+        ...stale.map(x => `line ${x.line} (${x.label}): ${x.text}${x.allowed ? '' : ' — not in the sections you ticked'}`),
+        ...(parsed.conflicts || []), ...(result.conflicts || []),
+    ];
+    const outdatedHtml = outdated.length
+        ? `<div class="cu-conflicts"><div class="cu-warn"><b>Lines that may no longer be true</b> (no change below covers them; fix them in the lorebook if they are right):</div>${outdated.map(x => `<div class="cu-warn">• ${esc(x)}</div>`).join('')}</div>`
+        : '';
+
+    const checkLine = (() => {
+        const ch = result.check;
+        if (!ch.ran) return '';
+        if (ch.failed) return `<div class="cu-warn">The check failed (${esc(ch.failed)}), so read every change carefully.</div>`;
+        const parts = [];
+        parts.push(ch.problems ? `${ch.problems} problem${ch.problems === 1 ? '' : 's'} in the changes` : 'no problems in the changes');
+        if (ch.staleFound) parts.push(`${ch.staleFound} line${ch.staleFound === 1 ? '' : 's'} on the card no longer true`);
+        let text = `Check: ${parts.join(', ')}.`;
+        const fx = result.fix;
+        if (fx.failed) text += ` Fixing failed (${fx.failed}).`;
+        else if (fx.ran) {
+            const did = [];
+            if (fx.fixed) did.push(`${fx.fixed} fixed`);
+            if (fx.dropped) did.push(`${fx.dropped} dropped`);
+            if (fx.kept) did.push(`${fx.kept} kept as they were`);
+            if (fx.staleFixed) did.push(`${fx.staleFixed} outdated line${fx.staleFixed === 1 ? '' : 's'} changed`);
+            if (did.length) text += ` Fix: ${did.join(', ')}.`;
+        }
+        const rc = result.recheck;
+        if (rc.failed) text += ` Checking the fixes failed (${rc.failed}).`;
+        else if (rc.ran) text += rc.problems ? ` Still ${rc.problems} problem${rc.problems === 1 ? '' : 's'} after the fix.` : ' The fixes check out.';
+        const flaggedLeft = items.some(it => (it.op.found || []).length);
+        if (flaggedLeft) text += ' Changes with a problem come unticked.';
+        const bad = !!(ch.problems || ch.staleFound) && (flaggedLeft || stale.length);
+        return `<div class="${bad ? 'cu-warn' : 'cu-ok'}">${esc(text)}</div>${result.general.map(p => `<div class="cu-warn">${esc(FOUND_TEXT[p.kind] || p.kind)}: ${esc(p.text.slice(0, 300))}</div>`).join('')}`;
+    })();
+
+    const raws = result.raws.map(([label, text]) => `<details><summary>${esc(label)}</summary><pre class="cu-pre">${esc(text)}</pre></details>`).join('');
+    const dropped = result.dropped.length
+        ? `<details><summary>Dropped after the check (${result.dropped.length})</summary>${result.dropped.map(op => `<div class="cu-dropped"><div><b>${esc(opHead(op))}</b> <span class="cu-muted">${esc(op.label || '')}</span></div>${(op.found || []).map(f => `<div class="cu-warn">${esc(FOUND_TEXT[f.kind])}: ${esc(f.text)}</div>`).join('')}<div class="cu-muted">${esc(op.dropped)}</div>${op.result?.length ? `<div class="cu-diff"><div class="cu-add">${esc(op.result.join('\n'))}</div></div>` : ''}</div>`).join('')}</details>`
+        : '';
+    const tail = `${dropped}${logInfo ? logDetails(logInfo.newLines) : ''}${raws}`;
+    const head = cardHead(card, tookText()) + editedNote(edited) + checkLine + outdatedHtml;
+    const real = items.filter(it => it.op.kind !== 'canon');
+
+    const markDone = async () => {
+        const log = logInfo ? getLog(logInfo.key) : null;
+        if (log) log.applied = Math.max(log.applied || 0, logInfo.appliedTo);
+        await ctx().saveMetadata();
+    };
+    if (!real.length) {
+        let why = 'No usable changes in the reply.';
+        if (parsed.none) why = 'Nothing in the log changes this card.';
+        else if (parsed.ops.length) why = 'No changes left after the check.';
+        block.html(`${head}<div class="cu-muted">${why}</div><div class="cu-row cu-buttons"><div class="menu_button cu-mark">Mark these log lines as done</div></div>${tail}`);
+        block.find('.cu-mark').on('click', async () => {
+            await markDone();
+            block.find('.cu-mark').replaceWith('<div class="cu-ok">Done. Next time only newer lines are used.</div>');
+        });
+        return;
+    }
+
+    const chosen = () => items.filter(it => it.accept && !it.op.invalid).map(it => it.op);
+    const sizeLine = () => {
+        const limit = Number(settings().cardLimit) || 0;
+        const a = approxTokens(content.length);
+        const b = approxTokens(applyOps(content, chosen()).length);
+        return `<div class="cu-muted">Card size: ≈${a.toLocaleString()} → ≈${b.toLocaleString()} tokens with the ticked changes${limit ? ` (limit ${limit.toLocaleString()})` : ''}.</div>`;
+    };
+    const render = () => {
+        const after = applyOps(content, chosen());
+        let html = `${head}<div class="cu-size">${sizeLine()}</div>`;
+        let group = null;
+        items.forEach((it, i) => {
+            const op = it.op;
+            if (op.label !== group) {
+                group = op.label;
+                html += `<div class="cu-group">${esc(group || (Number.isInteger(op.index) ? 'top of the card' : 'could not be placed'))}</div>`;
+            }
+            const warnings = [];
+            for (const f of (op.found || []).filter(x => x.text !== op.invalid)) warnings.push(`${it.editedAfterCheck ? '(checked before your edit) ' : ''}${FOUND_TEXT[f.kind] || f.kind}: ${f.text.slice(0, 300)}`);
+            if (op.disputed) warnings.push(`The updater disagrees with the check: ${op.disputed.slice(0, 300)}`);
+            warnings.push(...it.baseWarnings);
+            if (op.kind !== 'canon') for (const r of opRepeats(op, after, ignoreNames)) warnings.push(`Much like ${r.where}: "${r.excerpt.slice(0, 160)}${r.excerpt.length > 160 ? '…' : ''}"`);
+            const notes = [];
+            if (op.fixed && op.firstFound?.length) notes.push(`Fixed after the check (${op.firstFound.map(f => FOUND_TEXT[f.kind] || f.kind).join(', ').toLowerCase()}).`);
+            if (op.source === 'stale') notes.push('Added after the check found the line no longer true.');
+            html += `<div class="cu-item${op.invalid ? ' cu-invalid' : ''}">
+                <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}${op.invalid ? ' disabled' : ''}><b>${esc(opHead(op))}</b></label>
+                ${op.reason ? `<div class="cu-muted">${esc(op.reason)}</div>` : ''}
+                ${notes.map(n => `<div class="cu-muted">${esc(n)}</div>`).join('')}
+                ${warnings.map(w => `<div class="cu-warn">${esc(w)}</div>`).join('')}
+                <div class="cu-diff">${op.invalid && !op.result?.length && op.type !== 'remove' ? `<div class="cu-add">${esc(op.text || '')}</div>` : opDiffHtml(op)}</div>
+                ${op.type !== 'remove' && !op.invalid ? `<details><summary>Edit before saving</summary><textarea class="text_pole cu-edit" data-edit="${i}" rows="${Math.min(10, 2 + Math.ceil(op.result.join('\n').length / 90))}">${esc(op.result.join('\n'))}</textarea></details>` : ''}
+            </div>`;
+        });
+        html += `<div class="cu-row cu-buttons"><div class="menu_button cu-save">Save ticked changes</div><div class="menu_button cu-mark" title="Saves nothing; next time the update starts after these log lines.">Mark log lines as done without saving</div></div>${tail}`;
+        block.html(html);
+        block.find('[data-accept]').on('change', function () {
+            items[Number(this.dataset.accept)].accept = this.checked;
+            render();
+        });
+        block.find('[data-edit]').on('change', function () {
+            const it = items[Number(this.dataset.edit)];
+            const value = this.value.replace(/\s+$/, '');
+            if (!value.trim()) return;
+            it.op.result = value.split('\n');
+            if (it.op.found?.length) it.editedAfterCheck = true;
+            const w = opWarnings({ ...it.op, find: null }, { personaNames });
+            it.baseWarnings = w.warnings;
+            render();
+        });
+        block.find('.cu-save').on('click', () => saveOps(card, content, items, job.storyDate, block, logInfo));
+        block.find('.cu-mark').on('click', async () => {
+            await markDone();
+            block.find('.cu-mark').replaceWith('<div class="cu-ok">Log lines marked as done. Nothing was saved.</div>');
+        });
+    };
+    render();
+}
+
+async function saveOps(card, content, items, storyDate, block, logInfo) {
+    const chosen = items.filter(it => it.accept && !it.op.invalid).map(it => it.op);
+    if (!chosen.some(op => op.kind !== 'canon')) {
+        toastr.info('Tick at least one change to save.', 'Card Updater');
+        return;
+    }
+    try {
+        const current = await readEntry(card.world, card.uid);
+        if (current !== content) {
+            toastr.warning(`${card.title} was changed since it was drafted. Draft it again.`, 'Card Updater');
+            return;
+        }
+        const updated = applyOps(content, chosen);
+        await keepVersion(card, content, storyDate);
+        await writeEntry(card.world, card.uid, updated);
+        chatStore().saved[`${card.world}|${card.uid}`] = String(stringHash(updated));
+        const log = logInfo ? getLog(logInfo.key) : null;
+        if (log) log.applied = Math.max(log.applied || 0, logInfo.appliedTo);
+        await ctx().saveMetadata();
+        const n = chosen.filter(op => op.kind !== 'canon').length;
+        block.find('.cu-save').replaceWith(`<div class="cu-ok">Saved ${n} change${n === 1 ? '' : 's'}. The previous version is kept under Versions.</div>`);
+        block.find('.cu-mark').remove();
+        block.find('.cu-item input, .cu-item textarea').prop('disabled', true);
+        toastr.success(`${card.title} updated.`, 'Card Updater');
+    } catch (err) {
+        console.error(LOG, err);
+        toastr.error(`Saving failed: ${err?.message || err}`, 'Card Updater');
+    }
 }
 
 function logDetails(lines) {
@@ -871,6 +1250,7 @@ function settingsHtml() {
         <label for="cu_update_model">Model for updating and tightening (empty = same as above)</label>
         <input id="cu_update_model" class="text_pole" type="text" placeholder="z-ai/glm-5.3">
         <label class="checkbox_label"><input type="checkbox" id="cu_check"><span>Check each draft (one more request per card)</span></label>
+        <label class="checkbox_label" title="Changes the check flags, and lines it finds no longer true, go back to the updating model once, and the fixes are checked again."><input type="checkbox" id="cu_fix"><span>Fix what the check finds (up to two more requests)</span></label>
         <div class="cu-row cu-buttons">
           <div id="cu_copy_sc" class="menu_button">Copy from Summaryception</div>
           <div id="cu_test" class="menu_button">Test connection</div>
@@ -939,6 +1319,7 @@ function bindSettings() {
     $('#cu_think_check').val(s.checkThinking).on('change', function () { s.checkThinking = this.value; save(); });
     $('#cu_update_model').val(s.updateModel).on('input', function () { s.updateModel = this.value.trim(); save(); });
     $('#cu_check').prop('checked', !!s.checkDrafts).on('change', function () { s.checkDrafts = !!this.checked; save(); });
+    $('#cu_fix').prop('checked', !!s.fixDrafts).on('change', function () { s.fixDrafts = !!this.checked; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
     $('#cu_limit').val(s.cardLimit).on('input', function () { s.cardLimit = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });

@@ -373,7 +373,7 @@ test('0.5: strict homes and edit-not-rewrite are in the update rules', () => {
     const sys = U.systemPrompt('Leon');
     assert.ok(sys.includes('Anything involving Leon, even when other people were there too: only in their entry for Leon'));
     assert.ok(sys.includes('HISTORY only gets life changes'));
-    assert.ok(sys.includes("Edit lines, don't rewrite them"));
+    assert.ok(sys.includes("You don't rewrite the card. You return a short list of changes"));
 });
 
 test('0.5: check replies are read; nothing readable is null', () => {
@@ -417,4 +417,275 @@ test('0.5: the long-line warning ignores an existing long line that only got a s
     const appended = old.replace(/\.$/, '') + '. Fridays he can run late.';
     assert.deepEqual(U.checkUpdate('ordinary', old, appended).filter(w => w.includes('70 words')), []);
     assert.equal(U.checkUpdate('ordinary', 'short', '- ' + 'word '.repeat(80)).filter(w => w.includes('70 words')).length, 1);
+});
+
+// ---------------------------------------------------------------- 0.6: change lists
+
+const JULES = `JULES VAUGHN — Lead
+
+CANON POINT
+Portrayed after the slap (Season 3, Episode 6). Nothing after this has happened.
+
+IDENTITY
+- Paid mistress of Ellis. He is her only client.
+- Her terms with Ellis: paid, kept in his apartment, and exclusive to him by his rule, because he will not bring anything home to his wife.
+
+PERSONALITY
+1. Alone: paints for hours.
+2. With her closest person: she has none. With Ellis she is light and agreeable.
+
+SPEECH AND VOICE
+Cool and low.
+
+HISTORY
+- Age 17: met Rue at a party.
+- Early May: slept with Rue in the penthouse.
+
+RELATIONSHIPS
+ELLIS
+- Wants: to keep him.
+
+LEON (the neighbor)
+- Now: eats with him at his place on a standing invitation from Monday 19 May.
+- Shared history:
+  - Monday 19 May: tea at his place, where she set her terms.
+  - Day 6 - Thursday 22 May: the real talk.
+- As it grows: a straight answer earns more.
+
+APPEARANCE
+- Hands: long, with paint in the creases.`;
+
+test('0.6: the card is numbered from 1 and the numbers come back off', () => {
+    const n = U.numberCard('a\n\n  - b');
+    assert.equal(n, '1| a\n2|\n3|   - b');
+    assert.equal(U.stripLineNumbers('3|   - b\n12| - c\nno number'), '  - b\n- c\nno number');
+    const spans = U.sectionSpans(JULES, U.updatableRanges(JULES));
+    assert.ok(spans.includes('IDENTITY (lines 6-8)') && spans.includes('HISTORY (lines 17-19)') && spans.includes('RELATIONSHIPS (lines 21-30)'), spans.join(' | '));
+});
+
+test('0.6: change lists are read: edit with and without find, add, remove, aliases, drop and keep', () => {
+    const p = U.parseOps(`<think>…</think>
+<change type="edit" line="25"><find>eats with him</find><new>her lover since Day 7; eats with him</new><reason>log 3</reason></change>
+<change type="edit" line="12">
+<new>2. With her closest person: Leon.</new>
+<reason>log 4</reason>
+</change>
+<change type="add" after="29">
+<new>  - Day 7 - Friday 23 May: first sex, in her kitchen.</new>
+<reason>log 5</reason>
+</change>
+<change type="remove" line="19"><reason>repeats</reason></change>
+<change type='insert' after=8><new>- x</new></change>
+<change type="edit" line="7"><new></new><reason>gone</reason></change>
+<change type="edit" line="7"><find></find><new>y</new></change>
+<change type="bogus" line="7"><new>y</new></change>
+<change op="3" type="edit" line="12"><new>fixed</new></change>
+<drop op="4"/>
+<drop op="5"><reason>not in the log</reason></drop>
+<keep op="6"><reason>the log says so on Day 7</reason></keep>
+<conflict>a -> b</conflict>
+<storydate>Day 7 - Friday 23 May</storydate>`);
+    assert.deepEqual(p.ops.map(o => `${o.type}:${o.line}`), ['edit:25', 'edit:12', 'add:29', 'remove:19', 'add:8', 'remove:7', 'edit:12']);
+    assert.equal(p.ops[0].find, 'eats with him');
+    assert.equal(p.ops[1].find, null);
+    assert.equal(p.ops[2].text, '  - Day 7 - Friday 23 May: first sex, in her kitchen.', 'leading spaces kept');
+    assert.equal(p.ops[6].ref, 3);
+    assert.deepEqual(p.drops, [{ ref: 4, reason: '' }, { ref: 5, reason: 'not in the log' }]);
+    assert.deepEqual(p.keeps, [{ ref: 6, reason: 'the log says so on Day 7' }]);
+    assert.deepEqual(p.conflicts, ['a -> b']);
+    assert.equal(p.storyDate, 'Day 7 - Friday 23 May');
+    assert.equal(U.parseOps('<none/>').none, true);
+    assert.equal(U.parseOps('<change type="edit" line="2"><new>12| - copied number</new></change>').ops[0].text, '- copied number');
+});
+
+test('0.6: changes are placed, applied by original line, and everything else stays byte for byte', () => {
+    const ranges = U.updatableRanges(JULES);
+    const raw = U.parseOps(`<change type="edit" line="26"><find>eats with him</find><new>her lover since Day 7 - Friday 23 May; eats with him</new></change>
+<change type="edit" line="12"><new>2. With her closest person: Leon. With Ellis she is light and agreeable.</new></change>
+<change type="add" after="29"><new>- Day 7 - Friday 23 May: first sex, in her kitchen.</new></change>
+<change type="add" after="29"><new>- Day 7 - Friday 23 May: she asked him to stay.</new></change>
+<change type="remove" line="18"></change>`).ops.map((o, k) => ({ ...o, id: k + 1 }));
+    const ops = U.resolveOps(JULES, raw, ranges);
+    assert.ok(ops.every(o => !o.invalid && !o.outside), JSON.stringify(ops.map(o => o.invalid)));
+    assert.equal(ops[0].label, 'RELATIONSHIPS / LEON');
+    assert.equal(ops[0].result[0], '- Now: her lover since Day 7 - Friday 23 May; eats with him at his place on a standing invitation from Monday 19 May.');
+    assert.deepEqual(ops[2].result, ['  - Day 7 - Friday 23 May: first sex, in her kitchen.'], 'indented like the dated lines around it');
+    const after = U.applyOps(JULES, ops);
+    const a = after.split('\n');
+    assert.equal(a[11], '2. With her closest person: Leon. With Ellis she is light and agreeable.');
+    assert.ok(!after.includes('Age 17: met Rue'));
+    assert.deepEqual(a.slice(26, 31), [
+        '  - Monday 19 May: tea at his place, where she set her terms.',
+        '  - Day 6 - Thursday 22 May: the real talk.',
+        '  - Day 7 - Friday 23 May: first sex, in her kitchen.',
+        '  - Day 7 - Friday 23 May: she asked him to stay.',
+        '- As it grows: a straight answer earns more.',
+    ], 'adds after the same line keep their order');
+    // Only the five changes differ.
+    const diff = U.lineDiff(JULES, after).filter(d => d.type !== 'same');
+    assert.equal(diff.filter(d => d.type === 'del').length, 3);
+    assert.equal(diff.filter(d => d.type === 'add').length, 4);
+    assert.equal(U.applyOps(JULES, []), JULES);
+});
+
+test('0.6: bad line numbers, blank lines, two changes to one line, sections not ticked', () => {
+    const ranges = U.updatableRanges(JULES, new Set(['history', 'relationships']));
+    const raw = U.parseOps(`<change type="edit" line="400"><new>x</new></change>
+<change type="edit" line="16"><new>x</new></change>
+<change type="remove" line="18"></change>
+<change type="edit" line="18"><new>- Age 17: met Rue.</new></change>
+<change type="edit" line="7"><find>only client</find><new>main client</new></change>
+<change type="edit" line="26"><find>words that are not there</find><new>x</new></change>
+<change type="edit" line="33"><new>- Hands: long, with paint in the creases.</new></change>`).ops.map((o, k) => ({ ...o, id: k + 1 }));
+    const ops = U.resolveOps(JULES, raw, ranges);
+    assert.match(ops[0].invalid, /no line 400/);
+    assert.match(ops[1].invalid, /blank/);
+    assert.equal(ops[2].invalid, '');
+    assert.match(ops[3].invalid, /#3 already changes line 18/);
+    assert.equal(ops[4].outside, true, 'IDENTITY was not ticked');
+    assert.match(ops[5].invalid, /not in line 26/);
+    assert.match(ops[6].invalid, /leaves the line as it is/);
+    const after = U.applyOps(JULES, ops);
+    assert.ok(!after.includes('Age 17'), 'valid change applied');
+    assert.ok(U.applyOps(JULES, ops.filter(o => !o.outside)).includes('only client'), 'changes outside the ticked sections are applied only when passed');
+    const w = U.opWarnings(ops[4]);
+    assert.ok(w.untick && w.warnings.some(x => x.includes('Outside the sections you ticked')));
+});
+
+test('0.6: an edit one line off is moved to the line it plainly fits; quoted words found loosely', () => {
+    const ranges = U.updatableRanges(JULES);
+    const raw = U.parseOps(`<change type="edit" line="11"><new>2. With her closest person: Leon, her lover. With Ellis she is light and agreeable.</new></change>
+<change type="edit" line="25"><find>EATS with him at his place on a standing invitation from Monday 19 May</find><new>is his lover and eats with him</new></change>
+<change type="edit" line="27"><find>tea at his place, where she set her terms</find><new>tea at his place, where she set her terms (company and food)</new></change>`).ops.map((o, k) => ({ ...o, id: k + 1 }));
+    const ops = U.resolveOps(JULES, raw, ranges);
+    assert.deepEqual(ops[0].moved, { from: 11, to: 12 });
+    assert.equal(ops[0].index, 11);
+    assert.deepEqual(ops[1].moved, { from: 25, to: 26 });
+    assert.equal(ops[1].result[0], '- Now: is his lover and eats with him.');
+    assert.deepEqual(ops[2].moved, { from: 27, to: 28 });
+    assert.ok(U.opWarnings(ops[0]).warnings[0].includes('said line 11; it fits line 12'));
+    assert.deepEqual(U.findLoose('She said “stay” — once.', '"stay" - once'), { start: 9, end: 22 });
+    assert.equal(U.findLoose('abc', 'xyz'), null);
+});
+
+test('0.6: an edit that rewrites a short labelled line stays on its line', () => {
+    const ranges = U.updatableRanges(JULES);
+    const ops = U.resolveOps(JULES, [{ id: 1, type: 'edit', line: 26, find: null, text: '- Now: her lover. Eats with him at his place.' }], ranges);
+    assert.equal(ops[0].moved, null);
+    assert.equal(ops[0].index, 25);
+    const off = U.resolveOps(JULES, [{ id: 1, type: 'edit', line: 25, find: null, text: '- Now: her lover. Eats with him at his place.' }], ranges);
+    assert.deepEqual(off[0].moved, { from: 25, to: 26 }, 'the label says which line it is');
+});
+
+test('0.6: warnings: Leon outside his entry, clock times, dropped names, personality, long lines', () => {
+    const ranges = U.updatableRanges(JULES);
+    const raw = U.parseOps(`<change type="add" after="19"><new>- Day 7 - Friday 23 May: slept with Leon in her kitchen at 3:33 PM.</new></change>
+<change type="edit" line="7"><new>- Paid mistress. He is her only client.</new></change>
+<change type="edit" line="12"><new>2. With her closest person: Leon.</new></change>
+<change type="add" after="29"><new>  - Day 7: ${'word '.repeat(75).trim()}.</new></change>
+<change type="edit" line="26"><find>at his place</find><new>at his place ~10 PM "at 9:00 sharp"</new></change>`).ops.map((o, k) => ({ ...o, id: k + 1 }));
+    const ops = U.resolveOps(JULES, raw, ranges);
+    const w = ops.map(o => U.opWarnings(o, { personaNames: ['Leon'] }));
+    assert.ok(w[0].untick && w[0].warnings.some(x => x.includes('Mentions Leon in HISTORY')));
+    assert.ok(w[0].warnings.some(x => x.includes('Clock time: 3:33 PM')));
+    assert.ok(w[1].warnings.some(x => x === 'No longer says: Ellis'), w[1].warnings.join(' | '));
+    assert.ok(!w[1].untick);
+    assert.ok(w[2].untick && w[2].warnings.some(x => x.includes('Personality change')));
+    assert.ok(w[2].warnings.some(x => x.includes('No longer says: Ellis')));
+    assert.ok(w[3].warnings.some(x => /new line is 7\d words long/.test(x)), w[3].warnings.join(' | '));
+    assert.ok(w[4].warnings.some(x => x.includes('Clock time: 10 PM')) && !w[4].warnings.some(x => x.includes('9:00')), 'quoted times are speech');
+    assert.deepEqual(U.clockTimes('at ~3:42 PM, then 11:45pm, "7:08" and 3 amazing days'), ['3:42 PM', '11:45pm']);
+    assert.deepEqual(U.droppedTerms('- Knows Rue owed Laurie $10,000 on Day 5.', '- Knows Rue owed Laurie money.'), ['10,000', '5']);
+});
+
+test('0.6: repeats are reported for what a change adds, not for similarity the line already had', () => {
+    const card = `HISTORY
+- Day 7 - Friday 23 May: she had sex with Leon in her kitchen; Leon delayed Ellis at the elevator while she cleaned.
+
+RELATIONSHIPS
+LEON (neighbor)
+- Shared history:
+  - Day 7, afternoon: they had sex in her kitchen; Leon delayed Ellis at the elevator while she cleaned up.
+- Now: her lover.`;
+    const ranges = U.updatableRanges(card);
+    const add = U.resolveOps(card, [{ id: 1, type: 'add', line: 6, find: null, text: '  - Day 7: sex in her kitchen while Leon delayed Ellis at the elevator and she cleaned the counters.' }], ranges)[0];
+    const reps = U.opRepeats(add, U.applyOps(card, [add]), ['Jules', 'Leon']);
+    assert.equal(reps.length, 1);
+    assert.match(reps[0].where, /HISTORY|RELATIONSHIPS \/ LEON/);
+    const edit = U.resolveOps(card, [{ id: 1, type: 'edit', line: 6, find: 'cleaned up', text: 'cleaned up and he left', find2: null }], ranges)[0];
+    assert.deepEqual(U.opRepeats(edit, U.applyOps(card, [edit]), ['Jules', 'Leon']), [], 'the old line already matched HISTORY');
+});
+
+test('0.6: the log is cleaned for the update: clock times dropped, glued lines split, repeats left out', () => {
+    const out = U.normalizeLogLines([
+        '- Day 6 - Thursday 22 May, ~7:08 PM: Building fire alarm. Present: Jules, Leon.',
+        '- Day 7, ~12:01 AM: Jules came in. Present: Jules, Leon.',
+        '- Day 7 - Friday 23 May, 3:12 PM: she watched.',
+        '- Day 6, evening: Ellis arrived.',
+        '- Day 7 - Friday 23 May: Jules opened the door. Present: Jules, Ellis, Simon (on landing).- Day 7 - Friday 23 May: Jules told Leon "Ten minutes. Go." Present: Jules, Leon.',
+        '- Day 7: Jules came in. Present: Jules, Leon.',
+        '- undated: Jules said "meet me at 7:30" to Ellis.',
+    ]);
+    assert.deepEqual(out, [
+        '- Day 6 - Thursday 22 May: Building fire alarm. Present: Jules, Leon.',
+        '- Day 7: Jules came in. Present: Jules, Leon.',
+        '- Day 7 - Friday 23 May: she watched.',
+        '- Day 6, evening: Ellis arrived.',
+        '- Day 7 - Friday 23 May: Jules opened the door. Present: Jules, Ellis, Simon (on landing).',
+        '- Day 7 - Friday 23 May: Jules told Leon "Ten minutes. Go." Present: Jules, Leon.',
+        '- undated: Jules said "meet me at 7:30" to Ellis.',
+    ]);
+    assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('without the clock time'));
+});
+
+test('0.6: check of a change list: prompt, problems by change number, stale lines, unreadable is null', () => {
+    const ranges = U.updatableRanges(JULES);
+    const ops = U.resolveOps(JULES, [
+        { id: 1, type: 'edit', line: 26, find: 'eats with him', text: 'her lover; eats with him' },
+        { id: 2, type: 'add', line: 29, find: null, text: '  - Day 7: first sex.' },
+        { id: 3, type: 'remove', line: 18, find: null, text: '' },
+    ], ranges);
+    const up = U.opsCheckUserPrompt({ card: U.numberCard(JULES), title: 'Jules', ops, log: ['- Day 7: x'] });
+    assert.ok(up.includes('#1 CHANGE line 26 (RELATIONSHIPS / LEON)\nOLD: - Now: eats with him') && up.includes('REPLACES THE WORDS: "eats with him"\nWITH: "her lover; eats with him"'));
+    assert.ok(up.includes('#2 ADD after line 29 (RELATIONSHIPS / LEON)\nAFTER: - Day 6 - Thursday 22 May: the real talk.\nNEW: - Day 7: first sex.'));
+    assert.ok(up.includes('#3 REMOVE line 18 (HISTORY)\nOLD: - Age 17: met Rue at a party.'));
+    assert.ok(up.includes('26| - Now: eats with him'));
+    const only = U.opsCheckUserPrompt({ card: 'C', title: 'Jules', ops, log: [], only: [ops[0], ops[2]] });
+    assert.ok(only.includes('Check only changes #1 and #3'));
+    const sys = U.opsCheckSystemPrompt('Leon');
+    assert.ok(sys.includes('<stale line=') && sys.includes('only in the entry for Leon'));
+    assert.ok(!U.opsCheckSystemPrompt('Leon', { stale: false }).includes('<stale'));
+    const r = U.parseOpsCheck('<problem change="2" kind="twice">first sex -> line 25 says it</problem><problem change="9" kind="Invented">x</problem><stale line="12">she has none -> Leon is now her closest person, Day 7</stale>');
+    assert.deepEqual(r.problems.map(p => `${p.id}:${p.kind}`), ['2:twice', '9:unsupported']);
+    assert.deepEqual(r.stale, [{ line: 12, text: 'she has none -> Leon is now her closest person, Day 7' }]);
+    assert.deepEqual(U.parseOpsCheck('<ok/>'), { problems: [], stale: [] });
+    assert.equal(U.parseOpsCheck('Looks fine to me.'), null);
+});
+
+test('0.6: fix prompt lists every change, what the check found and the stale lines', () => {
+    const ops = U.resolveOps(JULES, [{ id: 1, type: 'edit', line: 26, find: 'eats with him', text: 'her lover; eats with him' }], U.updatableRanges(JULES));
+    const up = U.fixUserPrompt({ card: 'NUMBERED', title: 'Jules', sections: ['HISTORY (lines 17-19)'], log: ['- a'], ops, problems: [{ id: 1, kind: 'unsupported', text: 'her lover -> not in the log' }], stale: [{ line: 12, label: 'PERSONALITY', text: 'she has none -> Leon' }] });
+    assert.ok(up.includes('#1 UNSUPPORTED: her lover -> not in the log'));
+    assert.ok(up.includes('line 12 (PERSONALITY): she has none -> Leon'));
+    assert.ok(up.includes('YOUR CHANGES:\n#1 CHANGE line 26'));
+    const sys = U.fixSystemPrompt('Leon');
+    assert.ok(sys.includes('<drop op="3">') && sys.includes('<keep op="3">') && sys.includes('stale="19"'));
+    assert.ok(sys.includes('SAY IT ONCE') && sys.includes('Line numbers always refer to the card as it is now'));
+});
+
+test('0.6: update prompt asks for a change list with find for long lines and line spans', () => {
+    const sys = U.systemPrompt('Leon');
+    assert.ok(sys.includes('<change type="edit" line="57">\n<find>') && sys.includes('<change type="add" after="80">') && sys.includes('<change type="remove" line="12">'));
+    assert.ok(sys.includes('Use this for any line longer than about thirty words'));
+    assert.ok(sys.includes('Read every line of the card against the log'));
+    assert.ok(sys.includes('that something was unannounced'));
+    const up = U.userPrompt({ card: '1| X', title: 'Jules', sections: ['HISTORY (lines 17-19)'], log: ['- a'] });
+    assert.ok(up.includes('(each line starts with its number)') && up.includes('SECTIONS YOU MAY UPDATE: HISTORY (lines 17-19)'));
+});
+
+test('0.6: word diff keeps unchanged words and marks the rest', () => {
+    const d = U.wordDiff('she has none. With Ellis', 'she has Leon. With Ellis');
+    assert.deepEqual(d, [{ type: 'same', text: 'she has ' }, { type: 'del', text: 'none.' }, { type: 'add', text: 'Leon.' }, { type: 'same', text: ' With Ellis' }]);
+    const e = U.wordDiff("- Doesn't know: him at all.", '- Knows: he lives next to Jules.');
+    assert.deepEqual(e, [{ type: 'same', text: '- ' }, { type: 'del', text: "Doesn't know: him at all." }, { type: 'add', text: 'Knows: he lives next to Jules.' }]);
 });
