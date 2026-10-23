@@ -10,11 +10,12 @@ import {
     checkSystemPrompt, checkUserPrompt, parseCheck, findRepeats, lineLabels,
     numberCard, sectionSpans, parseOps, resolveOps, applyOps, normalizeLogLines, opsCheckSystemPrompt, opsCheckUserPrompt,
     parseOpsCheck, fixSystemPrompt, fixUserPrompt, opWarnings, opRepeats, wordDiff,
+    storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.6.1'; // keep in step with manifest.json
+const VERSION = '0.7.0'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -33,6 +34,7 @@ const DEFAULTS = Object.freeze({
     updateModel: '', // model for updating and tightening; empty = the same as for reading
     checkDrafts: true,
     fixDrafts: true, // send what the check finds back for fixing
+    sweepDrafts: true, // one pass over every line for what is no longer true
     cardLimit: 5000, // tokens; the template's limit for a lead
     profileId: '',
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
@@ -509,11 +511,13 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
     }
 
     // Step 2: the model lists changes to single lines of the numbered card.
+    const dates = storyDates(c.chat);
     const job = {
-        card, content, ranges,
+        card, content, ranges, dates,
+        days: storyDaysNote(dates),
         numbered: numberCard(content),
         sections: sectionSpans(content, ranges),
-        log: normalizeLogLines(newLines),
+        log: normalizeLogLines(newLines, dates),
         trackers: trackerLines(c.chat, card.names),
         storyDate: storyDateFrom(c.chat),
         tokens: approxTokens(content.length),
@@ -525,7 +529,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
     try {
         reply = await sendWithRetry(s, systemPrompt(c.name1), userPrompt({
             card: job.numbered, title: card.title, sections: job.sections, log: job.log,
-            trackers: job.trackers, storyDate: job.storyDate, tokens: job.tokens, limit: job.limit,
+            trackers: job.trackers, storyDate: job.storyDate, tokens: job.tokens, limit: job.limit, days: job.days,
         }), {
             signal,
             reasoning: s.updateThinking,
@@ -539,7 +543,39 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
         return;
     }
     const parsed = parseOps(reply);
-    const ops = resolveOps(content, parsed.ops.map((o, k) => ({ ...o, id: k + 1, source: 'update' })), ranges);
+    let ops = resolveOps(content, parsed.ops.map((o, k) => ({ ...o, id: k + 1, source: 'update' })), ranges, { dates });
+    const raws = [['Model reply', reply]];
+
+    // Step 2b: every line of the card against what is true now; a change for each line that no longer is.
+    let sweep = { ran: false };
+    if (s.sweepDrafts && (ops.length || parsed.now.length)) {
+        status.text(`${card.title} (${counter}): looking for lines that are no longer true…`);
+        try {
+            const sweepReply = await sendWithRetry(s, sweepSystemPrompt(c.name1), sweepUserPrompt({
+                card: job.numbered, title: card.title, sections: job.sections, now: parsed.now, log: job.log,
+                trackers: job.trackers, storyDate: job.storyDate, ops: ops.filter(o => !o.invalid),
+                tokens: job.tokens, limit: job.limit, days: job.days,
+            }), {
+                signal,
+                reasoning: s.updateThinking,
+                model: s.updateModel,
+                onProgress: progress('looking for lines that are no longer true'),
+                onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
+            });
+            raws.push(['Reply for lines no longer true', sweepReply]);
+            const found = parseOps(sweepReply);
+            const first = ops.length;
+            ops = resolveOps(content, [...ops, ...found.ops.map((o, k) => ({ ...o, id: first + k + 1, source: 'sweep' }))], ranges, { dates });
+            sweep = { ran: true, changes: found.ops.length };
+        } catch (err) {
+            if (signal?.aborted) {
+                block.html(`${cardHead(card, elapsed())}<div class="cu-warn">Cancelled.</div>`);
+                return;
+            }
+            console.error(LOG, err);
+            sweep = { ran: true, failed: err?.message || String(err) };
+        }
+    }
 
     // Step 3: check the changes against the log and the card, fix what the check finds, check the fixes.
     let result;
@@ -549,7 +585,8 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
         block.html(`${cardHead(card, elapsed())}${errorHtml('Checking failed', err, signal)}`);
         return;
     }
-    result.raws.unshift(['Model reply', reply]);
+    result.raws.unshift(...raws);
+    result.sweep = sweep;
     renderOpsReview(job, result, parsed, block, { took: elapsed, logInfo: { key: plan.key, appliedTo: log.lines.length, newLines }, edited });
 }
 
@@ -590,18 +627,20 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     const labels = lineLabels(job.content);
     const allowed = new Set();
     for (const r of job.ranges) for (let i = r.start + 1; i < r.end; i++) allowed.add(i);
+    const editable = new Set();
+    for (const r of editableRanges(job.content)) for (let i = r.start + 1; i < r.end; i++) editable.add(i);
     const touched = new Set(live.filter(o => o.type !== 'add').map(o => o.index));
     const staleSeen = new Set();
     out.stale = found.stale
         .filter(x => x.line >= 1 && x.line <= lines.length && lines[x.line - 1].trim() && !touched.has(x.line - 1) && !staleSeen.has(x.line) && staleSeen.add(x.line))
-        .map(x => ({ line: x.line, text: x.text, label: labels[x.line - 1], quote: lines[x.line - 1].trim(), allowed: allowed.has(x.line - 1) }));
+        .map(x => ({ line: x.line, text: x.text, label: labels[x.line - 1], quote: lines[x.line - 1].trim(), allowed: allowed.has(x.line - 1), editable: editable.has(x.line - 1) }));
     out.check.staleFound = out.stale.length;
 
     // Changes that couldn't be placed (quoted words not in the line, no such line) can be fixed too.
     const broken = firstOps.filter(o => o.invalid && /not in line|has no line|is blank/.test(o.invalid));
     for (const op of broken) op.found = [{ kind: 'placement', text: op.invalid }];
     const flagged = [...live.filter(op => op.found?.length), ...broken];
-    const fixable = out.stale.filter(x => x.allowed);
+    const fixable = out.stale.filter(x => x.editable);
     if (!s.fixDrafts || (!flagged.length && !fixable.length)) return out;
 
     say(`fixing ${[flagged.length ? `${flagged.length} change${flagged.length === 1 ? '' : 's'}` : '', fixable.length ? `${fixable.length} stale line${fixable.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')}`);
@@ -610,7 +649,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
         fixReply = await sendWithRetry(s, fixSystemPrompt(c.name1), fixUserPrompt({
             card: job.numbered, title, sections: job.sections, log: job.log, trackers: job.trackers, storyDate: job.storyDate,
             ops: [...live, ...broken].sort((a, b) => a.id - b.id), problems: flagged.flatMap(op => op.found.map(f => ({ id: op.id, ...f }))), stale: fixable,
-            tokens: job.tokens, limit: job.limit,
+            tokens: job.tokens, limit: job.limit, days: job.days,
         }), { signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('fixing what the check found') });
         out.raws.push(['Fix reply', fixReply]);
     } catch (err) {
@@ -656,7 +695,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     out.fix = summary;
     out.dropped = ops.filter(o => o.dropped);
     // Place every change again together, so two changes to one line are caught.
-    ops = resolveOps(job.content, ops.filter(o => !o.dropped), job.ranges);
+    ops = resolveOps(job.content, ops.filter(o => !o.dropped), job.ranges, { dates: job.dates });
     out.ops = ops;
     for (const x of out.stale) {
         const by = ops.find(o => !o.invalid && o.source === 'stale' && (o.staleFor === x.line || (o.type !== 'add' && o.index === x.line - 1)));
@@ -801,8 +840,13 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
     const dropped = result.dropped.length
         ? `<details><summary>Dropped after the check (${result.dropped.length})</summary>${result.dropped.map(op => `<div class="cu-dropped"><div><b>${esc(opHead(op))}</b> <span class="cu-muted">${esc(op.label || '')}</span></div>${(op.found || []).map(f => `<div class="cu-warn">${esc(FOUND_TEXT[f.kind])}: ${esc(f.text)}</div>`).join('')}<div class="cu-muted">${esc(op.dropped)}</div>${op.result?.length ? `<div class="cu-diff"><div class="cu-add">${esc(op.result.join('\n'))}</div></div>` : ''}</div>`).join('')}</details>`
         : '';
-    const tail = `${dropped}${logInfo ? logDetails(logInfo.newLines) : ''}${raws}`;
-    const head = cardHead(card, tookText()) + editedNote(edited) + checkLine + outdatedHtml;
+    const nowList = (parsed.now || []).length ? `<details><summary>What is true now, according to the update (${parsed.now.length})</summary><pre class="cu-pre">${esc(parsed.now.join('\n'))}</pre></details>` : '';
+    const tail = `${dropped}${nowList}${logInfo ? logDetails(logInfo.newLines) : ''}${raws}`;
+    const sw = result.sweep || { ran: false };
+    const sweepLine = !sw.ran ? ''
+        : sw.failed ? `<div class="cu-warn">The pass for lines that are no longer true failed (${esc(sw.failed)}), so look over the card yourself.</div>`
+            : `<div class="cu-muted">Lines no longer true: ${sw.changes ? `${sw.changes} change${sw.changes === 1 ? '' : 's'} found.` : 'none found.'}</div>`;
+    const head = cardHead(card, tookText()) + editedNote(edited) + sweepLine + checkLine + outdatedHtml;
     const real = items.filter(it => it.op.kind !== 'canon');
 
     const markDone = async () => {
@@ -847,6 +891,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             const notes = [];
             if (op.fixed && op.firstFound?.length) notes.push(`Fixed after the check (${op.firstFound.map(f => FOUND_TEXT[f.kind] || f.kind).join(', ').toLowerCase()}).`);
             if (op.source === 'stale') notes.push('Added after the check found the line no longer true.');
+            if (op.source === 'sweep') notes.push('Found by the pass for lines that are no longer true.');
             html += `<div class="cu-item${op.invalid ? ' cu-invalid' : ''}">
                 <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}${op.invalid ? ' disabled' : ''}><b>${esc(opHead(op))}</b></label>
                 ${op.reason ? `<div class="cu-muted">${esc(op.reason)}</div>` : ''}
@@ -940,7 +985,9 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
         block.html(`${cardHead(card)}<div class="cu-muted">This card hasn't been updated in this chat, so there are no added lines to tighten. Tick "also condense the original card" to tighten it anyway.</div>`);
         return;
     }
-    const marked = markNewLines(content, original, ranges);
+    const persona = personaEntryLines(content, nameVariants(c.name1 || ''));
+    const exempt = new Set([...persona].map(i => content.split(/\r?\n/)[i].trim()));
+    const marked = markNewLines(content, original, ranges, { also: persona });
     if (!marked.newLines && !includeOriginal) {
         block.html(`${cardHead(card)}${editedNote(edited)}<div class="cu-muted">The ticked sections have no lines added by updates, so there is nothing to tighten. Tick "also condense the original card" to tighten it anyway.</div>`);
         return;
@@ -952,6 +999,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
     try {
         reply = await sendWithRetry(s, tightenSystemPrompt(c.name1, { original: includeOriginal }), tightenUserPrompt({
             card: marked.text, title: card.title, sections: ranges.map(r => r.title), tokens, limit: Number(s.cardLimit) || 0,
+            days: storyDaysNote(storyDates(c.chat)),
         }), {
             signal,
             reasoning: s.updateThinking,
@@ -968,7 +1016,7 @@ async function runTighten(card, kinds, s, block, status, signal, counter, includ
     clearInterval(tick);
     const parsed = parseReply(reply);
     for (const u of parsed.updates) u.text = stripNewMarks(u.text);
-    await renderReview(card, content, ranges, parsed, '', block, elapsed, reply, null, { tighten: true, original: original ?? content, edited, status, counter, signal, s });
+    await renderReview(card, content, ranges, parsed, '', block, elapsed, reply, null, { tighten: true, original: original ?? content, exempt, edited, status, counter, signal, s });
 }
 
 /** Runs the check pass over the proposed sections and attaches what it finds to them. */
@@ -1042,7 +1090,7 @@ async function renderReview(card, content, ranges, parsed, storyDate, block, too
     // Tighten may only touch lines added in play; a change to an original line is flagged and left unticked.
     if (opts.tighten) {
         for (const it of items) {
-            it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original);
+            it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original, { exempt: opts.exempt });
             if (it.lost.length) it.accept = false;
         }
     }
@@ -1121,7 +1169,7 @@ async function renderReview(card, content, ranges, parsed, storyDate, block, too
             const it = all[Number(this.dataset.edit)];
             it.newBody = this.value.replace(/\s+$/, '');
             if (it.found?.length) it.editedAfterCheck = true;
-            if (opts.tighten) it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original);
+            if (opts.tighten) it.lost = lostOriginalLines(it.oldBody, it.newBody, opts.original, { exempt: opts.exempt });
             computeRepeats();
             render();
         });
@@ -1255,6 +1303,7 @@ function settingsHtml() {
         <label for="cu_update_model">Model for updating and tightening (empty = same as above)</label>
         <input id="cu_update_model" class="text_pole" type="text" placeholder="z-ai/glm-5.3">
         <label class="checkbox_label"><input type="checkbox" id="cu_check"><span>Check each draft (one more request per card)</span></label>
+        <label class="checkbox_label" title="After the update, the updating model goes through every line of the card against what is true now and writes a change for each line that no longer is. Changes in sections you didn't tick come unticked."><input type="checkbox" id="cu_sweep"><span>Look for lines that are no longer true (one more request per card)</span></label>
         <label class="checkbox_label" title="Changes the check flags, and lines it finds no longer true, go back to the updating model once, and the fixes are checked again."><input type="checkbox" id="cu_fix"><span>Fix what the check finds (up to two more requests)</span></label>
         <div class="cu-row cu-buttons">
           <div id="cu_copy_sc" class="menu_button">Copy from Summaryception</div>
@@ -1325,6 +1374,7 @@ function bindSettings() {
     $('#cu_update_model').val(s.updateModel).on('input', function () { s.updateModel = this.value.trim(); save(); });
     $('#cu_check').prop('checked', !!s.checkDrafts).on('change', function () { s.checkDrafts = !!this.checked; save(); });
     $('#cu_fix').prop('checked', !!s.fixDrafts).on('change', function () { s.fixDrafts = !!this.checked; save(); });
+    $('#cu_sweep').prop('checked', !!s.sweepDrafts).on('change', function () { s.sweepDrafts = !!this.checked; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
     $('#cu_limit').val(s.cardLimit).on('input', function () { s.cardLimit = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });

@@ -47,8 +47,10 @@ the end of the model's thinking.
 2. Pick the lorebook (the chat's active lorebooks by default) and tick the cards. **Select everyone in the story**
    ticks the cards whose names appear in the story.
 3. Tick the sections to update: Identity, Personality, Appearance, History, Knowledge, Secrets, Goals,
-   Relationships, Ordinary Day, Social World, Standing. Speech and Voice, sample lines, Limits, Like and Want,
-   Fear and Resent, Small Habits and Inner Life are never changed.
+   Relationships, Ordinary Day, Social World, Standing. The other sections (Speech and Voice, Like and Want, Fear
+   and Resent, Small Habits, Coping, Limits) only get a change when a line in them is no longer true, and those
+   changes always come unticked. Sample lines, CANON POINT (apart from its date) and the lines above the first
+   section are never changed.
 4. Under the sections, each ticked card shows what it will read ("reads the whole story: 6 parts, about 22,000
    tokens"). Click **Draft updates**.
 5. Each change is its own row, grouped by section and relationship entry: the line it changes with the changed
@@ -68,8 +70,15 @@ Each card is done in two steps, so no single request is huge:
 2. **The update.** The model gets the card with numbered lines, the new log lines and the tracker rows that name
    the character (not the raw story), and returns a list of changes: change line N (quoting just the words to
    change in a long line), add a line after line N, or remove line N. Every line it doesn't name stays exactly as
-   it is. Clock times are taken out of the log lines first (the date is enough), and lines the log model ran
-   together are split.
+   it is. Before the changes it writes **what is true now**: where the character lives and with whom, who they are
+   with, what they are leaving, rules broken, goals done or dropped, beliefs the story disproved, how they behave
+   differently now. Clock times are taken out of the log lines first (the date is enough), short dates are written
+   out in full from the chat headers ("Day 9" → "Day 9 - Sunday 25 May"), and lines the log model ran together are
+   split.
+3. **Lines no longer true.** One more request goes through the card line by line, every section, against what is
+   true now, and writes a change for each line that no longer is: "keep the penthouse" after she moved out,
+   "believes the arrangement is safe" after it burned, a habit that changed for good. Turn it off with **Look for
+   lines that are no longer true**.
 
 The log is kept in the chat. Next time only the story after the last read is used, and only log lines that aren't
 in the card yet go to the update. If reading fails partway, nothing is added to the log, so the next run starts
@@ -89,6 +98,16 @@ themselves (also the hidden ones) or the summary pieces that cover them.
 - Everything between the character and your persona goes in their entry for you under RELATIONSHIPS.
 - Existing lines are never rewritten as a whole section; a long line is changed by quoting only the words that
   change, so the rest of the line stays word for word.
+- A new fact replaces the old one it ends (moving out ends "keep the apartment"; "not the one I'm waiting for" ends
+  "wants her back"), rather than sitting next to it.
+- A lasting change in how the character talks, copes or behaves stays as an event in that person's entry and also
+  changes the general line, with a short clause: "with Leon, since Day 7 - Friday 23 May, cries in front of him". A
+  change in how they talk to someone goes in that entry's Speech line.
+- Now and Wants say how things stand today, not a chain of "since Day 6 …; since Day 7 …".
+- A named person the character now has lasting dealings with gets their own entry under RELATIONSHIPS.
+- New dated lines go in date order (by day number, calendar date and time of day); a line the model put in the
+  wrong place is moved, and the review says so.
+- On a card over its size limit, every lasting fact still goes in, as short as it can be; Tighten makes room.
 - Dates are the story's named days as the chat headers write them. Words that count from a day (yesterday,
   tonight, "four days clean") are flagged.
 - PERSONALITY only changes when the story shows a lasting change. Those rows are unticked by default and flagged.
@@ -103,7 +122,8 @@ Warnings in yellow, about what the change itself adds (never about what the line
 - what an edit cuts from its line ("Cuts from the line: …"), or names and numbers it no longer has;
 - a new line over 50 words, or a line that grows a lot;
 - a new line that is mostly the same words as another line of the card, with that line's closest sentence;
-- a line number that was off by one and was moved to the line it plainly fits.
+- a line number that was off by one and was moved to the line it plainly fits, or a dated line put in date order;
+- a Now or Wants line that reads as a chain of dates.
 
 ## What the updates keep
 
@@ -129,6 +149,8 @@ the update changes that line if its section is ticked, or reports it. Reports sh
 **Lines that may no longer be true**, to fix by hand.
 
 ## The check pass and the fix
+
+The check reads every change, also those from the pass for lines no longer true.
 
 After each draft, one more request reads every change next to the numbered card, the log and the tracker rows, and
 reports:
@@ -171,6 +193,10 @@ from the card as it was before its first update in this chat stay word for word.
 splits crammed lines, rewrites shorthand as plain sentences and keeps each Shared history to the events that
 matter most. A change to an original line is flagged and left unticked. Each card's size is shown in the list,
 and the review shows the size before and after the ticked changes.
+
+Your persona's own entry under RELATIONSHIPS is written in play, so Tighten always treats all of it as added
+lines, even on a card you edited by hand: its Shared history is cut to the turning points (at most eight dated
+lines), and its Now and Wants lines to how things stand today.
 
 If a card is changed outside Card Updater after it last saved it (by hand, or in another chat), the next run
 notices and takes the current text as the card's original, so Tighten leaves those edits alone. Cards updated

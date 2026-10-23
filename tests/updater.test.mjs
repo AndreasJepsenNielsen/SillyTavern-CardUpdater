@@ -549,7 +549,7 @@ test('0.6: bad line numbers, blank lines, two changes to one line, sections not 
     assert.ok(!after.includes('Age 17'), 'valid change applied');
     assert.ok(U.applyOps(JULES, ops.filter(o => !o.outside)).includes('only client'), 'changes outside the ticked sections are applied only when passed');
     const w = U.opWarnings(ops[4]);
-    assert.ok(w.untick && w.warnings.some(x => x.includes('Outside the sections you ticked')));
+    assert.ok(w.untick && w.warnings.some(x => x === "IDENTITY isn't one of the sections you ticked: check before accepting."));
 });
 
 test('0.6: an edit one line off is moved to the line it plainly fits; quoted words found loosely', () => {
@@ -723,4 +723,152 @@ test('0.6.1: the version in the window matches the manifest', async () => {
     const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url)));
     const index = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
     assert.equal(index.match(/const VERSION = '([^']+)'/)[1], manifest.version);
+});
+
+// ---------------------------------------------------------------- 0.7.0
+
+const DAY9 = `JULES — Lead
+
+CANON POINT
+Portrayed after the slap.
+
+IDENTITY
+- Lives alone in Ellis's penthouse.
+
+SPEECH AND VOICE
+Cool, low and unhurried; does not shout.
+Sample lines:
+1. (Dry) "And yet you showed up here."
+
+SMALL HABITS
+- Smokes, outside or at a window.
+
+GOALS
+- Keep the penthouse and the time to paint.
+
+RELATIONSHIPS
+ELLIS
+- Wants: to keep him, the apartment and the allowance.
+
+LEON (the neighbor)
+- Now: since Day 6 she knocks; since Day 7 her lover.
+- Shared history:
+  - Saturday 17 May: on the landing she worked out who he is.
+  - Day 8 - Saturday 24 May, afternoon: she met Dez on the stairs.
+  - Day 8 - Saturday 24 May, night: she slept at his place.
+- As it grows: a straight answer earns more.
+
+APPEARANCE
+- Hands: long, with paint in the creases.`;
+
+const DATES = new Map([[1, 'Day 1 - Saturday 17 May'], [8, 'Day 8 - Saturday 24 May'], [9, 'Day 9 - Sunday 25 May']]);
+
+test('0.7: story days come from the chat headers; short dates are written out in full', () => {
+    const d = U.storyDates([{ mes: '[ 🕰️ 9:00 AM | 🗓️ Day 1 - Saturday 17 May | 📍 x ]' }, { mes: 'no header' }, { mes: '[ 🗓️ Day 9 - Sunday 25 May ]' }, { mes: '[ 🗓️ Day 9 - Sunday 25 May ]' }]);
+    assert.deepEqual([...d.entries()], [[1, 'Day 1 - Saturday 17 May'], [9, 'Day 9 - Sunday 25 May']]);
+    assert.equal(U.storyDaysNote(d), 'STORY DAYS (write dates in this form): Day 1 - Saturday 17 May; Day 9 - Sunday 25 May');
+    assert.equal(U.expandLeadDate('  - Day 9, evening: x', d), '  - Day 9 - Sunday 25 May, evening: x');
+    assert.equal(U.expandLeadDate('- Day 9 - Sunday 25 May: x', d), '- Day 9 - Sunday 25 May: x');
+    assert.equal(U.expandLeadDate('- Day 4: x', d), '- Day 4: x', 'unknown days stay');
+    assert.equal(U.expandLeadDate('- She moved in on Day 9.', d), '- She moved in on Day 9.', 'only a date at the start of a line');
+    assert.deepEqual(U.normalizeLogLines(['- Day 9, ~6:10 PM: she moved in.'], d), ['- Day 9 - Sunday 25 May: she moved in.']);
+});
+
+test('0.7: a new dated line goes in date order, by day, calendar date and time of day', () => {
+    const lines = DAY9.split('\n');
+    const at = t => lines.findIndex(l => l.includes(t));
+    const night = at('night: she slept');
+    const afternoon = at('afternoon: she met Dez');
+    assert.equal(U.datedPlace(lines, night, '  - Day 8 - Saturday 24 May, evening: they cooked.', DATES), afternoon, 'evening goes before night');
+    assert.equal(U.datedPlace(lines, night, '  - Day 9 - Sunday 25 May: she moved in.', DATES), night, 'a later day stays at the end');
+    assert.equal(U.datedPlace(lines, night, '  - Sunday 18 May: pasta at her door.', DATES), at('Saturday 17 May'), 'calendar dates order lines without day numbers');
+    assert.equal(U.datedPlace(lines, at('- Shared history:'), '  - Day 9 - Sunday 25 May: she moved in.', DATES), night, 'added under the label, moved to its place');
+    assert.equal(U.datedPlace(lines, night, '- Wants: him.', DATES), night, 'undated lines are left where the model put them');
+    const [op] = U.resolveOps(DAY9, [{ id: 1, type: 'add', line: night + 1, find: null, text: '- Day 8, evening: they cooked together.' }], U.updatableRanges(DAY9), { dates: DATES });
+    assert.deepEqual(op.result, ['  - Day 8 - Saturday 24 May, evening: they cooked together.'], 'indented and written out in full');
+    assert.deepEqual(op.reordered, { from: night + 1, to: afternoon + 1 });
+    assert.ok(U.opWarnings(op).warnings.some(w => w.startsWith(`Put in date order: after line ${afternoon + 1}`)));
+    const after = U.applyOps(DAY9, [op]).split('\n');
+    assert.deepEqual(after.slice(afternoon, afternoon + 3).map(l => l.trim().slice(0, 32)), ['- Day 8 - Saturday 24 May, after', '- Day 8 - Saturday 24 May, eveni', '- Day 8 - Saturday 24 May, night']);
+});
+
+test('0.7: locked sections can be changed but come unticked; canon, top lines and sample lines cannot', () => {
+    const lines = DAY9.split('\n');
+    const at = t => lines.findIndex(l => l.includes(t)) + 1;
+    const ops = U.resolveOps(DAY9, [
+        { id: 1, type: 'edit', line: at('Smokes, outside'), find: 'outside or at a window', text: 'on the street only, then showers and changes' },
+        { id: 2, type: 'edit', line: at('Cool, low'), find: 'does not shout', text: 'does not shout; with Leon, since Day 8 - Saturday 24 May, louder' },
+        { id: 3, type: 'edit', line: at('And yet you showed up'), find: 'And yet', text: 'But' },
+        { id: 4, type: 'edit', line: at('Portrayed after'), find: 'after the slap', text: 'later' },
+        { id: 5, type: 'edit', line: 1, find: 'Lead', text: 'Main' },
+    ], U.updatableRanges(DAY9), { dates: DATES });
+    assert.equal(ops[0].invalid, '');
+    assert.equal(ops[0].outside, true);
+    const w = U.opWarnings(ops[0]);
+    assert.ok(w.untick && w.warnings.includes("SMALL HABITS isn't one of the sections you ticked: check before accepting."));
+    assert.equal(ops[1].outside, true);
+    assert.match(ops[2].invalid, /Sample lines/);
+    assert.match(ops[3].invalid, /CANON POINT/);
+    assert.match(ops[4].invalid, /CANON POINT/);
+    const ed = U.editableRanges(DAY9).map(r => r.kind);
+    assert.ok(ed.includes('speech') && ed.includes('habits') && !ed.includes('canon') && !ed.includes('preamble'));
+});
+
+test('0.7: a new relationship entry gets a blank line before its name', () => {
+    const lines = DAY9.split('\n');
+    const end = lines.findIndex(l => l.includes('As it grows'));
+    const [op] = U.resolveOps(DAY9, [{ id: 1, type: 'add', line: end + 1, find: null, text: 'DEZ (Leon\'s other girl)\n- Now: Leon\'s girl for one more week; nothing of hers comes upstairs.\n- Speech: polite, short.' }], U.updatableRanges(DAY9), { dates: DATES });
+    assert.equal(op.invalid, '');
+    assert.equal(op.result[0], '');
+    const after = U.applyOps(DAY9, [op]);
+    assert.ok(after.includes("- As it grows: a straight answer earns more.\n\nDEZ (Leon's other girl)\n- Now: Leon's girl for one more week; nothing of hers comes upstairs.\n- Speech: polite, short.\n\nAPPEARANCE"));
+    assert.equal(U.lineLabels(after).at(after.split('\n').indexOf('- Speech: polite, short.')), 'RELATIONSHIPS / DEZ');
+    assert.ok(!U.opWarnings(op).warnings.some(w => w.includes('words long')));
+});
+
+test('0.7: Now and Wants written as a chain of dates are flagged', () => {
+    const lines = DAY9.split('\n');
+    const now = lines.findIndex(l => l.startsWith('- Now: since Day 6')) + 1;
+    const [op] = U.resolveOps(DAY9, [{ id: 1, type: 'edit', line: now, find: 'her lover.', text: 'her lover; since Day 8 she sleeps there; since Day 9 she lives there.' }], U.updatableRanges(DAY9));
+    assert.ok(U.opWarnings(op).warnings.some(w => w.startsWith('Reads as a chain of dates')));
+    const [ok] = U.resolveOps(DAY9, [{ id: 1, type: 'edit', line: now, find: null, text: '- Now: her boyfriend; she lives with him.' }], U.updatableRanges(DAY9));
+    assert.ok(!U.opWarnings(ok).warnings.some(w => w.startsWith('Reads as a chain')));
+});
+
+test('0.7: the update lists what is true now first, and the rules for ending old facts, general lines and new entries', () => {
+    const p = U.parseOps('<now>\n- Lives in Leon\'s apartment since Day 9 - Sunday 25 May.\n- Tells Ellis it is over on Tuesday 27 May.\n</now>\n<change type="remove" line="20"><reason>x</reason></change>');
+    assert.deepEqual(p.now, ["- Lives in Leon's apartment since Day 9 - Sunday 25 May.", '- Tells Ellis it is over on Tuesday 27 May.']);
+    assert.deepEqual(U.parseOps('<none/>').now, []);
+    const sys = U.systemPrompt('Leon');
+    for (const part of ['<now>', 'what they are leaving or have left', 'moving out ends wanting to keep the place', 'with Leon, since Day 7 - Friday 23 May, cries in front of him', "that person's Speech line", 'add an entry for them at the end of RELATIONSHIPS', 'Now and Wants lines say how things stand today', 'a new line goes in date order', 'see STORY DAYS', 'reviewed by hand', 'quoted sample line']) assert.ok(sys.includes(part), part);
+    const up = U.userPrompt({ card: 'C', title: 'Jules', sections: ['GOALS (lines 1-2)'], log: ['- a'], days: 'STORY DAYS (write dates in this form): Day 9 - Sunday 25 May' });
+    assert.ok(up.includes('STORY DAYS (write dates in this form): Day 9 - Sunday 25 May') && up.includes('Return only the <now> block'));
+    assert.match(U.sizeNote(7800, 5000), /Still put every lasting fact on it/);
+    assert.match(U.sizeNote(7800, 5000, { tighten: true }), /cut until it is under/);
+    assert.ok(U.opsCheckSystemPrompt('Leon').includes("a line that now says two things that can't both be true"));
+    assert.ok(U.fixSystemPrompt('Leon').includes('For each stale line the checker listed: a change without op'));
+});
+
+test('0.7: the pass for lines no longer true gets the card, what is true now, the log and the planned changes', () => {
+    const sys = U.sweepSystemPrompt('Leon');
+    for (const part of ['line by line, from the first section to the last', 'SPEECH AND VOICE, LIKES, FEARS, COPING, SMALL HABITS, LIMITS', 'fears of losing something they have already chosen to give up', 'with Leon, since Day 7 - Friday 23 May, …', 'Skip lines a planned change already fixes', 'SAY IT ONCE', '<change type="edit" line="57">']) assert.ok(sys.includes(part), part);
+    const ops = U.resolveOps(DAY9, [{ id: 1, type: 'edit', line: 7, find: 'alone in Ellis\'s penthouse', text: 'with Leon in his apartment' }], U.updatableRanges(DAY9));
+    const up = U.sweepUserPrompt({ card: U.numberCard(DAY9), title: 'Jules', sections: ['IDENTITY (lines 6-7)'], now: ['- Lives with Leon.'], log: ['- Day 9: moved in.'], ops, days: 'STORY DAYS: x' });
+    assert.ok(up.includes('<now>\n- Lives with Leon.\n</now>') && up.includes('#1 CHANGE line 7 (IDENTITY)') && up.includes('SECTIONS THE PLAYER TICKED: IDENTITY (lines 6-7). Changes in other sections are fine') && up.includes('STORY DAYS: x'));
+    assert.ok(U.sweepUserPrompt({ card: 'C', title: 'J', sections: [], now: [], log: [], ops: [] }).includes('(not listed; use the log)'));
+});
+
+test('0.7: Tighten may condense the player\'s own entry by default, and flags only other original lines', () => {
+    const persona = U.personaEntryLines(DAY9, ['Leon Kennedy', 'Leon']);
+    const lines = DAY9.split('\n');
+    assert.deepEqual([...persona].map(i => lines[i].trim().slice(0, 12)), ['- Now: since', '- Shared his', '- Saturday 1', '- Day 8 - Sa', '- Day 8 - Sa', '- As it grow']);
+    const marked = U.markNewLines(DAY9, DAY9, U.updatableRanges(DAY9), { also: persona });
+    assert.equal(marked.newLines, 6);
+    assert.ok(marked.text.includes('[new] - Now: since Day 6') && !marked.text.includes('[new] - Wants: to keep him'));
+    const exempt = new Set([...persona].map(i => lines[i].trim()));
+    assert.deepEqual(U.lostOriginalLines('- Now: since Day 6 she knocks; since Day 7 her lover.\n- Wants: x', '- Wants: x', DAY9, { exempt }), []);
+    assert.deepEqual(U.lostOriginalLines('- Wants: to keep him, the apartment and the allowance.', '- Wants: nothing.', DAY9, { exempt }), ['- Wants: to keep him, the apartment and the allowance.']);
+    const t = U.tightenSystemPrompt('Leon');
+    assert.ok(t.includes('at most eight dated lines') && t.includes('Write dates in full, as listed under STORY DAYS'));
+    assert.ok(U.tightenUserPrompt({ card: 'C', title: 'J', sections: ['HISTORY'], tokens: 7800, limit: 5000, days: 'STORY DAYS: x' }).includes('STORY DAYS: x'));
 });

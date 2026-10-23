@@ -63,6 +63,11 @@ export function rangeBody(lines, r) {
     return body.join('\n');
 }
 
+/** Sections a change may touch at all (unticked ones only by hand): everything but the top lines and CANON POINT. */
+export function editableRanges(text) {
+    return sectionRanges(text).filter(r => r.kind !== 'preamble' && r.kind !== 'canon' && !r.inline);
+}
+
 /** Ranges the updater may offer: an updatable kind, heading on its own line, first of its kind. */
 export function updatableRanges(text, kinds = UPDATABLE_KINDS) {
     const seen = new Set();
@@ -343,12 +348,22 @@ The roleplay model reads the whole card on every turn, so every line costs on ev
 - When a new fact replaces an old one, change the old line instead of adding a new one.`;
 
 /** "CARD SIZE" line for the prompts. */
-export function sizeNote(tokens, limit) {
+export function sizeNote(tokens, limit, { tighten = false } = {}) {
     if (!limit) return `CARD SIZE: about ${tokens.toLocaleString('en-US')} tokens.`;
     const over = tokens > limit;
-    return `CARD SIZE: about ${tokens.toLocaleString('en-US')} tokens. LIMIT: ${limit.toLocaleString('en-US')} tokens. ${over
-        ? 'The card is already over the limit: add only what is essential, as few and as short lines as possible.'
-        : 'Your changes must not take the card over the limit.'}`;
+    const what = tighten
+        ? (over ? 'The card is over the limit: cut until it is under, without losing what drives the character.' : 'Keep it under the limit.')
+        : (over
+            ? 'The card is already over the limit. Still put every lasting fact on it, as short as it can be: change an existing line rather than add one, and cut what a new fact replaces. Tighten shortens the card later; a missing fact can\'t be added back that way.'
+            : 'Your changes must not take the card over the limit.');
+    return `CARD SIZE: about ${tokens.toLocaleString('en-US')} tokens. LIMIT: ${limit.toLocaleString('en-US')} tokens. ${what}`;
+}
+
+/** "STORY DAYS" for the prompts: how each day of the story is written in the chat headers. */
+export function storyDaysNote(dates) {
+    if (!dates || !dates.size) return '';
+    const days = [...dates.entries()].sort((a, b) => a[0] - b[0]).slice(-60).map(([, full]) => full);
+    return `STORY DAYS (write dates in this form): ${days.join('; ')}`;
 }
 
 /** The rules for writing changes, shared by the update step and the fix step. */
@@ -358,7 +373,9 @@ function updateRules(u) {
 - Never write a passing state into the card: mood, where they are right now, what they are doing that day, injuries that heal within days, plans for the day. The game tracks those itself.
 - Never write how ${u} looks or what they wear or carry (jewellery, clothes, marks, their body). Those are for ${u} to decide, and the story may have made them up. Keep the act and leave out the detail.
 - Use only facts the log or the card states. Add no causes, reasons, motives, feelings or details the log doesn't give (why someone came, what they had just finished, that something was unannounced). Check every fact you write against the rest of the card too: if the card says something happened before, don't write that it never did.
-- Read every line of the card against the log, not only the lines about the newest events. A line the log shows is no longer true gets changed wherever it is: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed.
+- Read every line of the card against the log, not only the lines about the newest events. A line the log shows is no longer true gets changed wherever it is: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed, a goal finished or dropped, a belief the story disproved, wanting to keep something they are leaving, a fear of losing what they have already given up.
+- A new fact ends an old one when both can't be true at once: moving out ends wanting to keep the place; saying someone is not the one you are waiting for ends wanting them back; breaking a rule ends keeping it. Then change or remove the old part. Never leave both, in one line or on the card.
+- When an event shows a lasting change in how they talk, cope or behave, keep the event in that person's entry, and also change the general line it contradicts (in PERSONALITY, SPEECH AND VOICE, SMALL HABITS, COPING, LIKES or FEARS) with a short clause such as "with Leon, since Day 7 - Friday 23 May, cries in front of him". A change in how they talk to someone also goes in that person's Speech line, in a few words.
 - PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. If you do change a PERSONALITY line, say in the reason which events show it.
 - If the entry for ${u} says they have not met and now they have, change its lines into an entry for someone they know: Wants, Hides, a Speech line that says what they do when they talk to ${u} now (in front of whom, how close they stand, what they say first, what they do when they get nothing back), and Shared history.
 
@@ -374,12 +391,14 @@ HOW TO WRITE A CHANGE
 - To change part of a line: quote the words to change exactly in <find>, and give what replaces them in <new>. Every other word of the line stays as it is. Use this for any line longer than about thirty words. To add words at the end of a line, quote its last few words in <find> and repeat them in <new> with the addition.
 - To change a short line as a whole: give the whole line as it should read in <new>, without <find>. Keep every fact of the old line in its own words; change only the words that are no longer true.
 - A line that lists what someone wants, likes, fears, knows or hides grows: add the new part and keep the earlier parts that still hold. Replace a part only when the log shows it ended, and say so in the reason.
-- To add a line: say which existing line it goes after, and write it with the same leading spaces, bullet and field label as the lines around it. In a dated list, new lines go after the last line, in date order.
+- To add a line: say which existing line it goes after, and write it with the same leading spaces, bullet and field label as the lines around it. In a dated list, a new line goes in date order: after the last line with an earlier or the same date and time of day.
 - Remove a line, or words from a line, only when the log shows they are no longer true or the card already says them elsewhere; say which in the reason.
 - Never write line numbers into the text.
 - KNOWLEDGE lines use: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation."
-- RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's Now line says what the character does now. Add an entry for someone new only if they are now a lasting part of this character's life.
-- Dates: write the story's named day and date the way the log writes them (for example "Day 3 - Monday 14 October"). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead. Spoken lines in quotes keep their own words.
+- RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's Now line says what the character does now.
+- Now and Wants lines say how things stand today. Don't chain dates ("since Day 6 …; since Day 7 …; since Day 8 …"): fold what still holds into the present wording, change what has ended, and leave the dated story to Shared history.
+- If the log has something lasting between this character and a named person who has no entry yet (terms agreed, a relationship, a conflict that goes on), add an entry for them at the end of RELATIONSHIPS: their name in capitals as a heading line, then the field lines the other entries use (Now, Wants, Speech, Shared history), each short.
+- Dates: write the story's day and date in full, the way the chat headers do (for example "Day 3 - Monday 14 October"; see STORY DAYS). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead. Spoken lines in quotes keep their own words.
 - Keep the card's prose flat and plain: facts, behaviour, things said. No flourishes, no summing up, no interpretation. Write what the character does, never what they don't do.`;
 }
 
@@ -409,9 +428,13 @@ You don't rewrite the card. You return a short list of changes to single lines. 
 ${updateRules(u)}
 
 WHAT TO RETURN
-One block per change, in this form:
+First, what is true now, as of the newest date in the log: short lines of everything lasting that the card doesn't say yet or says differently. Where they live and with whom; who they are with and on what terms; what they are leaving or have left; rules or promises broken; goals reached, started or dropped; beliefs the story disproved; secrets now out; people who came into their life and terms agreed with them; how others now see them; how they now talk, cope or behave differently, and with whom.
+<now>
+- one fact per line
+</now>
+Then the changes that put every one of those facts on the card and take away every line that still says the opposite. One block per change, in this form:
 ${CHANGE_FORMAT}
-Only change lines inside the sections listed under SECTIONS YOU MAY UPDATE. Most log lines change nothing on the card; a handful of changes is normal. Add any <conflict> lines after the changes. If nothing in the log changes this card, return only <none/> (and any <conflict> lines).
+Change lines in the sections listed under SECTIONS YOU MAY UPDATE. A general line in another section that a lasting change contradicts (SPEECH AND VOICE, SMALL HABITS, LIKES, FEARS, COPING, LIMITS) may be changed too; those changes are reviewed by hand. Never change CANON POINT, the lines above the first section, or a quoted sample line. Most log lines change nothing on the card. Add any <conflict> lines after the changes. If nothing in the log changes this card, return only <none/> (and any <conflict> lines).
 At the very end, on its own line, write the newest story date in the log: <storydate>...</storydate>`;
 }
 
@@ -425,7 +448,7 @@ export function sectionSpans(text, ranges) {
     });
 }
 
-export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0 }) {
+export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0, days = '' }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
@@ -433,7 +456,8 @@ export function userPrompt({ card, title, sections, log, trackers, storyDate, to
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN (the current situation; use them for what they know and where things stand, never copy a passing mood into the card):\n<trackers>\n${trackers}\n</trackers>`);
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
-    parts.push(`List the changes for the card of ${title}. Return only the <change> blocks (or <none/>), any <conflict> lines and the <storydate> line.`);
+    if (days) parts.push(days);
+    parts.push(`List what is true now for ${title}, then the changes to the card. Return only the <now> block, the <change> blocks (or <none/>), any <conflict> lines and the <storydate> line.`);
     return parts.join('\n\n');
 }
 
@@ -451,11 +475,11 @@ For each change the checker flagged, return one of these:
 ${CHANGE_FORMAT.replace(/<change type/g, '<change op="3" type')}
 - <drop op="3"><reason>why it goes</reason></drop> when the change shouldn't be made at all (it repeats the card, it isn't in the log, it is a passing state).
 - <keep op="3"><reason>why the checker is wrong, quoting the log</reason></keep> when the checker is wrong and the change is right as it is.
-For each stale line the checker listed in a section you may update: a change without op that makes the line true again, with stale set to the line's number (<change stale="19" type="edit" line="19">). If the checker was wrong about the line, return nothing for it.
+For each stale line the checker listed: a change without op that makes the line true again, with stale set to the line's number (<change stale="19" type="edit" line="19">), keeping every part of the line that still holds. Changes outside SECTIONS YOU MAY UPDATE are reviewed by hand. If the checker was wrong about the line, return nothing for it.
 Fix only what the checker found. The changes it didn't flag are kept as they are, so don't repeat them and don't add what they already add.`;
 }
 
-export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0 }) {
+export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0, days = '' }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
@@ -463,6 +487,7 @@ export function fixUserPrompt({ card, title, sections, log, trackers, storyDate,
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`);
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
+    if (days) parts.push(days);
     parts.push(`YOUR CHANGES:\n${ops.map(describeOp).join('\n\n')}`);
     const found = [];
     for (const p of problems) found.push(`#${p.id} ${KIND_WORD[p.kind] || p.kind.toUpperCase()}: ${p.text}`);
@@ -485,9 +510,10 @@ export function originalLineSet(original) {
  * The card with every line that isn't in the original marked "[new] ", for the given ranges only.
  * @returns {{text: string, newLines: number}}
  */
-export function markNewLines(content, original, ranges) {
+export function markNewLines(content, original, ranges, { also = null } = {}) {
     const lines = String(content ?? '').split(/\r?\n/);
     const orig = originalLineSet(original);
+    if (also) for (const i of also) orig.delete(String(lines[i] ?? '').trim());
     const inRange = new Set();
     for (const r of ranges) for (let i = r.start + 1; i < r.end; i++) inRange.add(i);
     let newLines = 0;
@@ -499,13 +525,38 @@ export function markNewLines(content, original, ranges) {
     return { text: out.join('\n'), newLines };
 }
 
+/**
+ * Lines of the player's own entry under RELATIONSHIPS (without its name line). That entry is written in play, so
+ * Tighten may condense it like lines updates added.
+ */
+export function personaEntryLines(text, personaNames) {
+    const lines = String(text ?? '').split(/\r?\n/);
+    const out = new Set();
+    const names = (personaNames || []).map(n => String(n).toLowerCase()).filter(Boolean);
+    if (!names.length) return out;
+    const rel = sectionRanges(text).find(r => r.kind === 'relationships');
+    if (!rel) return out;
+    let inEntry = false;
+    for (let i = rel.start + 1; i < rel.end; i++) {
+        const h = headingInfo(lines[i]);
+        if (h) {
+            const core = h.core.toLowerCase();
+            inEntry = names.some(n => new RegExp(`(^|[^\\p{L}])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}])`, 'u').test(core));
+            continue;
+        }
+        if (inEntry && lines[i].trim()) out.add(i);
+    }
+    return out;
+}
+
 export function stripNewMarks(text) {
     return String(text ?? '').split('\n').map(l => l.replace(/^(\s*)\[new\]\s?/i, '$1')).join('\n');
 }
 
 /** Lines of the original card that a proposed section body no longer holds word for word. */
-export function lostOriginalLines(oldBody, newBody, original) {
+export function lostOriginalLines(oldBody, newBody, original, { exempt = null } = {}) {
     const orig = originalLineSet(original);
+    if (exempt) for (const t of exempt) orig.delete(t);
     const kept = new Set(String(newBody ?? '').split('\n').map(l => l.trim()));
     return String(oldBody ?? '').split('\n').map(l => l.trim()).filter(l => l && orig.has(l) && !kept.has(l));
 }
@@ -535,6 +586,8 @@ ${CHECKS}
 
 HOW TO TIGHTEN
 - Remove a [new] line when the card already states the same fact somewhere else; leave a few words pointing to it only where the reader would otherwise miss it.
+- The entry for ${u} under RELATIONSHIPS is written in play, so all of it is marked [new]. Its Shared history keeps only the turning points: at most eight dated lines, each one or two sentences, cutting day-by-day detail. Its Now and Wants lines say how things stand today, without a chain of dates ("since Day 6 …; since Day 7 …").
+- Write dates in full, as listed under STORY DAYS.
 - Shorten [new] lines to one plain sentence. Keep dates and who was there.
 - Merge [new] lines that say the same thing.
 - Split a [new] line that crams several events into one line, then keep only the events that matter.
@@ -555,11 +608,12 @@ the whole new section body
 Add any <conflict> lines after the updates. If nothing can be cut, return only <none/> (and any <conflict> lines).`;
 }
 
-export function tightenUserPrompt({ card, title, sections, tokens, limit }) {
+export function tightenUserPrompt({ card, title, sections, tokens, limit, days = '' }) {
     return [
         `CHARACTER CARD: ${title} (lines marked [new] were added in play)\n<card>\n${card}\n</card>`,
         `SECTIONS YOU MAY TIGHTEN: ${sections.join(', ')}`,
-        sizeNote(tokens, limit),
+        sizeNote(tokens, limit, { tighten: true }),
+        ...(days ? [days] : []),
         `Tighten the card for ${title}. Return only the <update> blocks, or <none/>.`,
     ].join('\n\n');
 }
@@ -767,6 +821,133 @@ export function checkUpdate(kind, oldBody, newBody) {
     return warnings;
 }
 
+// ---------------------------------------------------------------- lines that are no longer true
+
+export function sweepSystemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You find the lines of a character card that are no longer true, and write the change for each. The roleplay model reads this card on every turn as the truth about the character, so a line that is no longer true makes it play the character as they were, not as they are.
+
+You get the card with numbered lines, WHAT IS TRUE NOW (as of the newest date), the log of what happened, and the changes already planned. Go through the card section by section, line by line, from the first section to the last, including SPEECH AND VOICE, LIKES, FEARS, COPING, SMALL HABITS, LIMITS, STANDING and ORDINARY DAY. Test each line against WHAT IS TRUE NOW and the log. Look especially for:
+- where they live and who with, and what they are leaving or have left;
+- who they are with and on what terms, and how others now see them;
+- rules and promises already broken;
+- beliefs the story has disproved;
+- goals finished or dropped, and lines about wanting to keep something they are leaving;
+- fears of losing something they have already chosen to give up;
+- habits, and ways of talking, coping or behaving, that have changed for good.
+A new fact ends an old one when both can't be true at once: moving out ends wanting to keep the place; saying someone is not the one you are waiting for ends wanting them back; breaking a rule ends keeping it.
+
+For each line that is no longer true, write the change that makes it true again, keeping every part of the line that still holds. When it is true with one person only, add a short clause to the general line ("with ${u}, since Day 7 - Friday 23 May, …") rather than rewriting the trait. Skip lines a planned change already fixes. Don't add events; that is the planned changes' job. Never change CANON POINT, the lines above the first section, or a quoted sample line.
+
+${updateRules(u)}
+
+WHAT TO RETURN
+One block per line that is no longer true, in this form:
+${CHANGE_FORMAT}
+In the reason, quote the line of WHAT IS TRUE NOW or the log that the old line contradicts. If every line is still true, return only <none/>.`;
+}
+
+export function sweepUserPrompt({ card, title, sections, now, log, trackers, storyDate, ops, tokens = 0, limit = 0, days = '' }) {
+    const parts = [];
+    parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
+    if (tokens) parts.push(sizeNote(tokens, limit));
+    parts.push(`SECTIONS THE PLAYER TICKED: ${sections.join(', ')}. Changes in other sections are fine; they are reviewed by hand.`);
+    parts.push(`WHAT IS TRUE NOW:\n<now>\n${(now || []).join('\n') || '(not listed; use the log)'}\n</now>`);
+    parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
+    if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`);
+    if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
+    if (days) parts.push(days);
+    parts.push(`CHANGES ALREADY PLANNED:\n${ops.length ? ops.map(describeOp).join('\n\n') : '(none)'}`);
+    parts.push(`Go through every line of the card for ${title} and return a <change> for each line that is no longer true, or <none/>.`);
+    return parts.join('\n\n');
+}
+
+// ---------------------------------------------------------------- story days
+
+const WEEKDAYS = 'Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday';
+const MONTHS = 'January|February|March|April|May|June|July|August|September|October|November|December';
+
+/** Every "Day N - Weekday DD Month" the chat headers name, by day number. */
+export function storyDates(chat) {
+    const dates = new Map();
+    for (const m of Array.isArray(chat) ? chat : []) {
+        const h = String(m?.mes ?? '').match(/🗓️\s*Day\s+(\d+)\s*[-–—]\s*([^|\]\n]+)/u);
+        if (h && !dates.has(Number(h[1]))) dates.set(Number(h[1]), `Day ${h[1]} - ${h[2].trim()}`);
+    }
+    return dates;
+}
+
+const SHORT_DAY_RE = /^(\s*(?:[-*•]\s*)?)Day (\d+)(?!\s*[-–—]\s*\p{L})/u;
+
+/** "- Day 7, evening: …" → "- Day 7 - Friday 23 May, evening: …" when the headers name day 7. */
+export function expandLeadDate(line, dates) {
+    if (!dates || !dates.size) return line;
+    return String(line).replace(SHORT_DAY_RE, (m, lead, n) => (dates.has(Number(n)) ? `${lead}${dates.get(Number(n))}` : m));
+}
+
+const LEAD_DATE_RE = new RegExp(`^\\s*(?:[-*•]|\\d+[.)])?\\s*(?:Day\\s+(\\d+)(?:\\s*[-–—]\\s*(?:${WEEKDAYS})\\s+(\\d{1,2})\\s+(${MONTHS}))?|(?:${WEEKDAYS})\\s+(\\d{1,2})\\s+(${MONTHS}))([^:]{0,60})`);
+
+function timeRank(s) {
+    const t = String(s).toLowerCase();
+    if (/after midnight|early hours|before dawn/.test(t)) return 0;
+    if (/morning|breakfast|dawn/.test(t)) return 1;
+    if (/midday|noon|lunch/.test(t)) return 2;
+    if (/afternoon/.test(t)) return 3;
+    if (/evening|dinner|dusk/.test(t)) return 4;
+    if (/night|midnight/.test(t)) return 5;
+    return null;
+}
+
+/** Where a dated line sits in the story: its day number (from "Day N" or a date the headers name) and time of day. */
+export function dateKey(line, dates) {
+    const m = String(line ?? '').match(LEAD_DATE_RE);
+    if (!m) return null;
+    let day = m[1] ? Number(m[1]) : null;
+    if (day === null && dates && dates.size) {
+        const want = `${m[4]} ${m[5]}`.toLowerCase();
+        for (const [n, full] of dates) if (full.toLowerCase().includes(want)) day = n;
+    }
+    const monthName = m[3] || m[5];
+    const dom = Number(m[2] || m[4]);
+    const cal = monthName ? MONTHS.split('|').indexOf(monthName) * 31 + dom : null;
+    return { day, cal, rank: timeRank(m[6] || '') };
+}
+
+/** Compares two dated lines: by day number, else by calendar date, then by time of day. 0 when it can't tell. */
+function compareKeys(a, b) {
+    let d = null;
+    if (a.day !== null && b.day !== null) d = a.day - b.day;
+    else if (a.cal !== null && b.cal !== null) d = a.cal - b.cal;
+    if (d === null) return 0;
+    if (d !== 0) return d;
+    return a.rank !== null && b.rank !== null ? a.rank - b.rank : 0;
+}
+
+/**
+ * Where a new dated line belongs in the dated list at or right after line i: the index of the line it should
+ * follow. Returns i when it can't tell or i is already right.
+ */
+export function datedPlace(lines, i, newLine, dates) {
+    const key = dateKey(newLine, dates);
+    if (!key || (key.day === null && key.cal === null)) return i;
+    const indent = l => l.match(/^\s*/)[0].length;
+    const dated = k => k >= 0 && k < lines.length && lines[k].trim() && dateKey(lines[k], dates) !== null;
+    let b0;
+    if (dated(i)) b0 = i;
+    else if (dated(i + 1) && indent(lines[i + 1]) >= indent(lines[i])) b0 = i + 1;
+    else return i;
+    const ind = indent(lines[b0]);
+    while (dated(b0 - 1) && indent(lines[b0 - 1]) === ind) b0--;
+    let b1 = b0;
+    while (dated(b1 + 1) && indent(lines[b1 + 1]) === ind) b1++;
+    let target = b0 - 1;
+    for (let k = b0; k <= b1; k++) if (compareKeys(dateKey(lines[k], dates), key) <= 0) target = k;
+    if (target === i) return i;
+    // Only move when the anchor is plainly in the wrong place.
+    if (dated(i) && compareKeys(dateKey(lines[i], dates), key) <= 0 && (i === b1 || compareKeys(dateKey(lines[i + 1], dates), key) >= 0)) return i;
+    return target;
+}
+
 // ---------------------------------------------------------------- change lists
 
 /** The card with every line numbered from 1, the way the model sees it: "57| - Now: ...". */
@@ -827,7 +1008,8 @@ export function parseOps(reply) {
         .filter(x => x.ref !== null);
     const storyDate = (inner(text, 'storydate') || '').trim();
     const conflicts = [...text.matchAll(/<conflict>([\s\S]*?)<\/conflict>/gi)].map(m => m[1].trim()).filter(Boolean);
-    return { ops, drops: tagged('drop'), keeps: tagged('keep'), storyDate, conflicts, none: !ops.length && /<none\s*\/?>/i.test(text) };
+    const now = (inner(text, 'now') || '').split('\n').map(l => l.trim()).filter(l => /^[-*•]\s*\S/.test(l)).map(l => `- ${l.replace(/^[-*•]\s*/, '')}`);
+    return { ops, drops: tagged('drop'), keeps: tagged('keep'), now, storyDate, conflicts, none: !ops.length && /<none\s*\/?>/i.test(text) };
 }
 
 function normChars(s) {
@@ -880,6 +1062,7 @@ function similarity(a, b) {
 }
 
 const BULLET_RE = /^(\s*)(?:[-*•]|\d+[.)])\s/;
+const SAMPLE_LINE_RE = /^\s*(?:[-*•]\s*)?(?:\d+[.)]\s*)?(?:\([^)]{0,80}\)\s*)?["“]/;
 
 /** Gives new bullet lines the indentation of the line they sit with when the model left it out. */
 function fitIndent(newLines, ref) {
@@ -925,7 +1108,7 @@ function retarget(lines, i, text) {
  * @param {object[]} ranges the sections that may change
  * @returns {object[]} the ops with index, label, kind, oldLine, result, and invalid/outside/moved when they apply
  */
-export function resolveOps(content, ops, ranges) {
+export function resolveOps(content, ops, ranges, { dates = null } = {}) {
     const lines = String(content ?? '').split(/\r?\n/);
     const labels = lineLabels(content);
     const kindAt = new Array(lines.length).fill('');
@@ -966,6 +1149,14 @@ export function resolveOps(content, ops, ranges) {
             op.invalid = `Line ${op.line} is blank.`;
             return op;
         }
+        if (op.kind === 'canon' || op.kind === 'preamble' || (!op.kind && i < (ranges[0]?.start ?? 0))) {
+            op.invalid = 'CANON POINT and the lines above the first section are not changed by updates.';
+            return op;
+        }
+        if (op.kind === 'speech' && op.type !== 'add' && SAMPLE_LINE_RE.test(lines[i])) {
+            op.invalid = 'Sample lines keep the character\'s own words.';
+            return op;
+        }
         op.outside = op.type === 'add' ? !(allowed.has(i) || headings.has(i)) : !allowed.has(i);
         if (op.type !== 'add') {
             if (taken.has(i)) {
@@ -988,7 +1179,19 @@ export function resolveOps(content, ops, ranges) {
             // A new line after "- Shared history:" belongs with the indented lines under it.
             const next = lines[i + 1];
             const ref = /:\s*$/.test(lines[i]) && next && next.match(BULLET_RE)?.[1].length > (lines[i].match(/^\s*/)[0].length) ? next : lines[i];
-            op.result = fitIndent(op.text.split('\n'), ref);
+            op.result = fitIndent(op.text.split('\n'), ref).map(l => expandLeadDate(l, dates));
+            // A dated line goes in date order.
+            const place = datedPlace(lines, i, op.result[0], dates);
+            if (place !== i) {
+                op.reordered = { from: i + 1, to: place + 1 };
+                i = place;
+                op.index = i;
+                op.line = i + 1;
+                op.oldLine = lines[i] ?? '';
+                op.label = labels[Math.max(0, i)] || op.label;
+            }
+            // A new relationship entry gets a blank line before its name.
+            if (headingInfo(op.result[0]) && !/^\s*[-*•]/.test(op.result[0]) && lines[i] && lines[i].trim()) op.result = ['', ...op.result];
         }
         if (op.type === 'edit' && op.result.join('\n') === lines[i]) op.invalid = 'It leaves the line as it is.';
         return op;
@@ -1040,7 +1243,7 @@ const DAY_START = /(?:Day\s+\d|undated|Monday|Tuesday|Wednesday|Thursday|Friday|
  * Log lines as the update step gets them: lines the model ran together are split, clock times after the date are
  * dropped (the date is enough, and the update copied them), and exact repeats are left out.
  */
-export function normalizeLogLines(lines) {
+export function normalizeLogLines(lines, dates = null) {
     const split = [];
     for (const raw of lines || []) {
         const parts = String(raw).split(new RegExp(`(?<=[.!?")\\]])\\s*-\\s+(?=${DAY_START.source})`));
@@ -1054,6 +1257,7 @@ export function normalizeLogLines(lines) {
         if (!l.startsWith('- ')) l = `- ${l.replace(/^[-*•]\s*/, '')}`;
         // "- Day 7, ~3:42 PM: x" → "- Day 7: x"; "- Day 7 - Friday 23 May, 3:12 PM: x" → "- Day 7 - Friday 23 May: x"
         l = l.replace(/^- ([^:\n]*?),?\s*(?:at\s+)?~?\s*\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*:/, (m, date) => (date.trim() ? `- ${date.trim()}:` : '- undated:'));
+        l = expandLeadDate(l, dates);
         const key = l.replace(/^- [^:]*:\s*/, '').toLowerCase().replace(/\s+/g, ' ');
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1074,11 +1278,11 @@ export function opsCheckSystemPrompt(userName, { stale = true } = {}) {
 Compare each change with the log and with the rest of the card:
 - LOST: an edit or removal drops a fact from the old line while the log doesn't show that fact stopped being true, and the card doesn't state it anywhere else. A want, like or piece of knowledge replaced by a newer one is lost unless the log shows the old one ended.
 - UNSUPPORTED: the new text states something neither the log, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early). Also any detail of how ${u} looks or what they wear or carry.
-- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere. Also wrong: a secret marked as told or found out when the log shows only something like it happening (crying in front of someone does not tell them about an earlier time she cried); a change to who a secret is hidden from that the person's own Hides line contradicts; something this character told someone written as what they know.
+- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere. Also wrong: a line that now says two things that can't both be true (an old part the new fact ends: moving out ends wanting to keep the place; "not the one I'm waiting for" ends wanting someone back; breaking a rule ends keeping it); a secret marked as told or found out when the log shows only something like it happening (crying in front of someone does not tell them about an earlier time she cried); a change to who a secret is hidden from that the person's own Hides line contradicts; something this character told someone written as what they know.
 - TWICE: the new text repeats something the card already says on another line, the same fact told the same way (give that line's number), or another change already adds it. Anything involving ${u} belongs only in the entry for ${u} under RELATIONSHIPS, never in HISTORY or KNOWLEDGE. Not a repeat: the same event in two people's entries when each says what it meant between those two, or a SECRETS line and a Hides line naming the same secret.
 - PASSING: the new text writes a passing state into the card: a mood, where someone is right now, what they are doing that day.
 ${stale ? `
-Then read every line of the card against the log and list the lines the log shows are no longer true and that none of the changes fix: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed, a belief that turned out false. Only lines the log clearly contradicts.
+Then read every line of the card, in every section, against the log and list the lines the log shows are no longer true and that none of the changes fix: where they live and with whom, what they are leaving, a rule already broken, a belief the story disproved, a goal finished or dropped, wanting to keep something they are leaving, a fear of losing what they already gave up, a trait or habit they have now acted against for good. Only lines the log clearly contradicts.
 ` : ''}
 Quote words exactly. One tag per problem:
 <problem change="3" kind="lost">the words, then -> what is wrong</problem>${stale ? `
@@ -1249,8 +1453,9 @@ export function opWarnings(op, { personaNames = [] } = {}) {
     let untick = false;
     if (op.invalid) return { warnings: [op.invalid], untick: true };
     if (op.moved) warnings.push(`The model said line ${op.moved.from}; it fits line ${op.moved.to}, so it was moved there.`);
+    if (op.reordered) warnings.push(`Put in date order: after line ${op.reordered.to} (the model said after line ${op.reordered.from}).`);
     if (op.outside) {
-        warnings.push('Outside the sections you ticked.');
+        warnings.push(`${String(op.label || 'This section').split(' / ')[0]} isn't one of the sections you ticked: check before accepting.`);
         untick = true;
     }
     if (op.kind === 'personality' && op.type !== 'remove') {
@@ -1281,9 +1486,13 @@ export function opWarnings(op, { personaNames = [] } = {}) {
             warnings.push(`Cuts from the line: ${shown}${cut.phrases.length > 3 ? ' …' : ''}`);
         } else if (gone.length) warnings.push(`No longer says: ${gone.slice(0, 8).join(', ')}${gone.length > 8 ? '…' : ''}`);
     }
+    const chain = t => (String(t).match(/\bsince\b|\bDay \d+\b/g) || []).length;
+    if (['now', 'wants'].includes(fieldLabel(op.result[0] || '')) && chain(newText) >= 3 && chain(newText) > chain(oldText)) {
+        warnings.push('Reads as a chain of dates. Now and Wants say how things stand today; the dated story goes in Shared history.');
+    }
     const nw = words(newText);
     const ow = words(oldText);
-    if (op.type === 'add' && nw > 50) warnings.push(`The new line is ${nw} words long.`);
+    if (op.type === 'add' && nw > 50 && !headingInfo(op.result.find(l => l.trim()) || '')) warnings.push(`The new line is ${nw} words long.`);
     if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) warnings.push(`The line grows from ${ow} to ${nw} words.`);
     return { warnings, untick };
 }
