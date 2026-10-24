@@ -274,6 +274,7 @@ Plain words, events not interpretation. Keep each line short.
 - When someone says something that changes how two people stand with each other, give their words, and give the other person's answer with it.
 - Name who did or said what exactly as the story says. If the story doesn't make clear who did something, write "unclear who" rather than guessing a name.
 - Keep who did what to whom exactly as the story has it, and name the act as the story describes it. Never turn one act into another (touching into sex, a kiss into more), and never merge two people's acts into one.
+- When the story contradicts itself (a slip in who did something, an object in two places at once), keep what the rest of the scene supports, or write "unclear".
 If nothing in this part involves ${name}, reply with exactly: NONE`;
 }
 
@@ -389,6 +390,8 @@ ${CHECKS}
 
 HOW TO WRITE A CHANGE
 - To change part of a line: quote the words to change exactly in <find>, and give what replaces them in <new>. Every other word of the line stays as it is. Use this for any line longer than about thirty words. To add words at the end of a line, quote its last few words in <find> and repeat them in <new> with the addition.
+- When you change part of a line, read the whole line as it will read afterwards against what is true now. Every clause in it must still be true; change any that isn't, with a longer <find> or by giving the whole line.
+- Every fact you write must agree with your other changes and with the rest of the card.
 - To change a short line as a whole: give the whole line as it should read in <new>, without <find>. Keep every fact of the old line in its own words; change only the words that are no longer true.
 - A line that lists what someone wants, likes, fears, knows or hides grows: add the new part and keep the earlier parts that still hold. Replace a part only when the log shows it ended, and say so in the reason.
 - To add a line: say which existing line it goes after, and write it with the same leading spaces, bullet and field label as the lines around it. In a dated list, a new line goes in date order: after the last line with an earlier or the same date and time of day.
@@ -877,12 +880,65 @@ export function storyDates(chat) {
     return dates;
 }
 
-const SHORT_DAY_RE = /^(\s*(?:[-*•]\s*)?)Day (\d+)(?!\s*[-–—]\s*\p{L})/u;
+const SHORT_DAY_RE = /^(\s*(?:[-*•]\s*)?)Day (\d+)(?!\d)(?!\s*[-–—]\s*\p{L})/u;
 
 /** "- Day 7, evening: …" → "- Day 7 - Friday 23 May, evening: …" when the headers name day 7. */
 export function expandLeadDate(line, dates) {
     if (!dates || !dates.size) return line;
     return String(line).replace(SHORT_DAY_RE, (m, lead, n) => (dates.has(Number(n)) ? `${lead}${dates.get(Number(n))}` : m));
+}
+
+const BROKEN_LABEL_RE = new RegExp(`Day (\\d+)\\s*[-–—]\\s*(?:${WEEKDAYS})\\s+\\d{1,2}\\s+(?:${MONTHS})(\\d+)(?=\\s*[-–—]\\s*(?:${WEEKDAYS})\\b)`, 'g');
+const FULL_LABEL_RE = new RegExp(`Day (\\d+)(?!\\d)\\s*[-–—]\\s*((?:${WEEKDAYS})\\s+\\d{1,2}\\s+(?:${MONTHS}))`, 'g');
+
+/**
+ * Day labels in a line checked against the chat headers. Labels broken by 0.7.0's date bug
+ * ("Day 1 - Saturday 17 May0 - Monday 26 May") are repaired; labels whose number and date disagree are listed,
+ * with the header label for that date (or for that number when the headers don't have the date).
+ * @returns {{line: string, repaired: boolean, mismatches: {found: string, want: string}[]}}
+ */
+export function checkDayLabels(line, dates) {
+    const before = String(line ?? '');
+    const fixed = before.replace(BROKEN_LABEL_RE, 'Day $1$2');
+    const mismatches = [];
+    if (dates && dates.size) {
+        for (const m of fixed.matchAll(FULL_LABEL_RE)) {
+            const n = Number(m[1]);
+            const date = m[2].toLowerCase().replace(/\s+/g, ' ');
+            const own = dates.get(n);
+            if (own && own.toLowerCase().includes(date)) continue;
+            let want = '';
+            for (const [, full] of dates) if (full.toLowerCase().includes(` - ${date}`)) want = full;
+            if (!want && own) want = own;
+            if (want) mismatches.push({ found: m[0], want });
+        }
+    }
+    return { line: fixed, repaired: fixed !== before, mismatches };
+}
+
+/**
+ * Changes for lines already on the card whose day labels are broken or disagree with the chat headers.
+ * A repaired label is certain; a disagreement takes the header label for the date and comes unticked.
+ */
+export function dayLabelOps(content, dates, ranges) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const editable = new Set();
+    for (const r of ranges) for (let i = r.start + 1; i < r.end; i++) editable.add(i);
+    const out = [];
+    lines.forEach((l, i) => {
+        if (!editable.has(i) || !/Day \d/.test(l)) return;
+        const c = checkDayLabels(l, dates);
+        let text = c.line;
+        for (const mm of c.mismatches) text = text.replace(mm.found, mm.want);
+        if (text === l) return;
+        out.push({
+            type: 'edit', line: i + 1, find: null, text, source: 'dates', dateFix: c.mismatches.length ? 'mismatch' : 'repair',
+            reason: c.mismatches.length
+                ? `The day label doesn't match the chat headers: ${c.mismatches.map(mm => `"${mm.found}" → "${mm.want}"`).join(', ')}.`
+                : 'Repairs a day label broken by Card Updater 0.7.0.',
+        });
+    });
+    return out;
 }
 
 const LEAD_DATE_RE = new RegExp(`^\\s*(?:[-*•]|\\d+[.)])?\\s*(?:Day\\s+(\\d+)(?:\\s*[-–—]\\s*(?:${WEEKDAYS})\\s+(\\d{1,2})\\s+(${MONTHS}))?|(?:${WEEKDAYS})\\s+(\\d{1,2})\\s+(${MONTHS}))([^:]{0,60})`);
@@ -1193,6 +1249,7 @@ export function resolveOps(content, ops, ranges, { dates = null } = {}) {
             // A new relationship entry gets a blank line before its name.
             if (headingInfo(op.result[0]) && !/^\s*[-*•]/.test(op.result[0]) && lines[i] && lines[i].trim()) op.result = ['', ...op.result];
         }
+        if (dates && dates.size) op.result = op.result.map(l => checkDayLabels(l, dates).line);
         if (op.type === 'edit' && op.result.join('\n') === lines[i]) op.invalid = 'It leaves the line as it is.';
         return op;
     });
@@ -1229,7 +1286,7 @@ export function describeOp(op) {
     if (op.type === 'add') out.push(`AFTER: ${String(op.oldLine ?? '').trim()}`);
     else out.push(`OLD: ${String(op.oldLine ?? '').trim()}`);
     if (op.type === 'edit' && op.find !== null && op.find !== undefined) {
-        out.push(`REPLACES THE WORDS: "${op.find}"`, `WITH: "${op.text}"`);
+        out.push(`REPLACES THE WORDS: "${op.find}"`, `WITH: "${op.text}"`, `NEW LINE: ${(op.result || []).map(l => l.trim()).join('\n')}`);
     } else if (op.type !== 'remove') out.push(`NEW: ${(op.result || []).map(l => l.trim()).join('\n')}`);
     if (op.reason) out.push(`REASON: ${op.reason}`);
     return out.join('\n');
@@ -1256,7 +1313,7 @@ export function normalizeLogLines(lines, dates = null) {
         if (!l) continue;
         if (!l.startsWith('- ')) l = `- ${l.replace(/^[-*•]\s*/, '')}`;
         // "- Day 7, ~3:42 PM: x" → "- Day 7: x"; "- Day 7 - Friday 23 May, 3:12 PM: x" → "- Day 7 - Friday 23 May: x"
-        l = l.replace(/^- ([^:\n]*?),?\s*(?:at\s+)?~?\s*\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*:/, (m, date) => (date.trim() ? `- ${date.trim()}:` : '- undated:'));
+        l = l.replace(/^- ([^:\n]*?),?\s*(?:at\s+)?~?\s*(?:\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?|\d{1,2}\s*[AaPp]\.?[Mm]\.?)\s*:/, (m, date) => (date.trim() ? `- ${date.trim()}:` : '- undated:'));
         l = expandLeadDate(l, dates);
         const key = l.replace(/^- [^:]*:\s*/, '').toLowerCase().replace(/\s+/g, ' ');
         if (seen.has(key)) continue;
@@ -1268,7 +1325,7 @@ export function normalizeLogLines(lines, dates = null) {
 
 // ---------------------------------------------------------------- checking a list of changes
 
-export const KIND_WORD = { lost: 'LOST', unsupported: 'UNSUPPORTED', wrong: 'WRONG', twice: 'TWICE', passing: 'PASSING', placement: 'COULD NOT BE PLACED' };
+export const KIND_WORD = { lost: 'LOST', unsupported: 'UNSUPPORTED', wrong: 'WRONG', twice: 'TWICE', passing: 'PASSING', placement: 'COULD NOT BE PLACED', rule: 'BREAKS A RULE' };
 const KIND_ALIASES = { lost: 'lost', missing: 'lost', dropped: 'lost', unsupported: 'unsupported', invented: 'unsupported', added: 'unsupported', inferred: 'unsupported', wrong: 'wrong', contradiction: 'wrong', contradicts: 'wrong', twice: 'twice', repeat: 'twice', repeats: 'twice', duplicate: 'twice', passing: 'passing', temporary: 'passing' };
 
 export function opsCheckSystemPrompt(userName, { stale = true } = {}) {
@@ -1278,7 +1335,7 @@ export function opsCheckSystemPrompt(userName, { stale = true } = {}) {
 Compare each change with the log and with the rest of the card:
 - LOST: an edit or removal drops a fact from the old line while the log doesn't show that fact stopped being true, and the card doesn't state it anywhere else. A want, like or piece of knowledge replaced by a newer one is lost unless the log shows the old one ended.
 - UNSUPPORTED: the new text states something neither the log, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early). Also any detail of how ${u} looks or what they wear or carry.
-- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere. Also wrong: a line that now says two things that can't both be true (an old part the new fact ends: moving out ends wanting to keep the place; "not the one I'm waiting for" ends wanting someone back; breaking a rule ends keeping it); a secret marked as told or found out when the log shows only something like it happening (crying in front of someone does not tell them about an earlier time she cried); a change to who a secret is hidden from that the person's own Hides line contradicts; something this character told someone written as what they know.
+- WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere. Read each change's whole new line (NEW or NEW LINE), not only the replaced words: a clause the change left in place that the log shows is no longer true is WRONG. Two changes that state facts that disagree with each other (one says she left her key behind, another that he set her key on the counter) are WRONG: report it on each of them, saying which the log supports. Also wrong: a line that now says two things that can't both be true (an old part the new fact ends: moving out ends wanting to keep the place; "not the one I'm waiting for" ends wanting someone back; breaking a rule ends keeping it); a secret marked as told or found out when the log shows only something like it happening (crying in front of someone does not tell them about an earlier time she cried); a change to who a secret is hidden from that the person's own Hides line contradicts; something this character told someone written as what they know.
 - TWICE: the new text repeats something the card already says on another line, the same fact told the same way (give that line's number), or another change already adds it. Anything involving ${u} belongs only in the entry for ${u} under RELATIONSHIPS, never in HISTORY or KNOWLEDGE. Not a repeat: the same event in two people's entries when each says what it meant between those two, or a SECRETS line and a Hides line naming the same secret.
 - PASSING: the new text writes a passing state into the card: a mood, where someone is right now, what they are doing that day.
 ${stale ? `
@@ -1448,12 +1505,24 @@ export function opRepeats(op, cardAfter, ignoreNames = []) {
  * @param {{personaNames?: string[]}} opts
  * @returns {{warnings: string[], untick: boolean}}
  */
-export function opWarnings(op, { personaNames = [] } = {}) {
+export function opWarnings(op, { personaNames = [], dates = null } = {}) {
     const warnings = [];
+    const problems = []; // rule breaks: sent to the fix step, and unticked if they are still there
     let untick = false;
-    if (op.invalid) return { warnings: [op.invalid], untick: true };
+    const problem = (t) => {
+        warnings.push(t);
+        problems.push(t);
+    };
+    if (op.invalid) return { warnings: [op.invalid], problems: [], untick: true };
     if (op.moved) warnings.push(`The model said line ${op.moved.from}; it fits line ${op.moved.to}, so it was moved there.`);
     if (op.reordered) warnings.push(`Put in date order: after line ${op.reordered.to} (the model said after line ${op.reordered.from}).`);
+    if (op.source === 'dates') {
+        if (op.dateFix === 'mismatch') {
+            warnings.push('Check which is right, the day number or the date; this takes the date.');
+            untick = true;
+        }
+        return { warnings, problems, untick };
+    }
     if (op.outside) {
         warnings.push(`${String(op.label || 'This section').split(' / ')[0]} isn't one of the sections you ticked: check before accepting.`);
         untick = true;
@@ -1462,22 +1531,23 @@ export function opWarnings(op, { personaNames = [] } = {}) {
         warnings.push('Personality change: check the reason before accepting.');
         untick = true;
     }
-    if (op.type === 'remove') return { warnings, untick };
+    if (op.type === 'remove') return { warnings, problems, untick };
     const newText = op.result.join('\n');
     const oldText = op.type === 'edit' ? op.oldLine : '';
     const who = (op.kind === 'history' || op.kind === 'knowledge') && !mentionsAny(oldText, personaNames) ? personaNames.find(n => mentionsAny(newText, [n])) : null;
-    if (who) {
-        warnings.push(`Mentions ${who} in ${op.kind === 'history' ? 'HISTORY' : 'KNOWLEDGE'}; anything involving ${who} belongs in their entry under RELATIONSHIPS.`);
-        untick = true;
-    }
+    if (who) problem(`Mentions ${who} in ${op.kind === 'history' ? 'HISTORY' : 'KNOWLEDGE'}; anything involving ${who} belongs in their entry under RELATIONSHIPS.`);
     const oldClock = new Set(clockTimes(oldText));
     const clock = clockTimes(newText).filter(t => !oldClock.has(t));
-    if (clock.length) warnings.push(`Clock time: ${clock.join(', ')}. The date is enough.`);
+    if (clock.length) problem(`Clock time: ${clock.join(', ')}. The date is enough.`);
     const oldRel = new Set(relativeTimeWords(oldText));
     const rel = relativeTimeWords(newText).filter(t => !oldRel.has(t));
-    if (rel.length) warnings.push(`Counts from a day: ${rel.join(', ')}. Use the named date instead.`);
+    if (rel.length) problem(`Counts from a day: ${rel.join(', ')}. Use the named date instead.`);
     const check = newText.match(/\[check:([^\]]*)\]/i);
-    if (check && !/\[check:/i.test(oldText)) warnings.push(`Unsure who did it, check before saving: "${check[1].trim()}"`);
+    if (check && !/\[check:/i.test(oldText)) problem(`Unsure who did it, check before saving: "${check[1].trim()}"`);
+    const oldBad = new Set(checkDayLabels(oldText, dates).mismatches.map(m => m.found));
+    for (const mm of checkDayLabels(newText, dates).mismatches) {
+        if (!oldBad.has(mm.found)) problem(`"${mm.found}" doesn't match the chat headers, which have "${mm.want}".`);
+    }
     if (op.type === 'edit') {
         const cut = cutPhrases(oldText, newText);
         const gone = droppedTerms(oldText, newText);
@@ -1488,13 +1558,13 @@ export function opWarnings(op, { personaNames = [] } = {}) {
     }
     const chain = t => (String(t).match(/\bsince\b|\bDay \d+\b/g) || []).length;
     if (['now', 'wants'].includes(fieldLabel(op.result[0] || '')) && chain(newText) >= 3 && chain(newText) > chain(oldText)) {
-        warnings.push('Reads as a chain of dates. Now and Wants say how things stand today; the dated story goes in Shared history.');
+        problem('Reads as a chain of dates. Now and Wants say how things stand today; the dated story goes in Shared history.');
     }
     const nw = words(newText);
     const ow = words(oldText);
-    if (op.type === 'add' && nw > 50 && !headingInfo(op.result.find(l => l.trim()) || '')) warnings.push(`The new line is ${nw} words long.`);
-    if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) warnings.push(`The line grows from ${ow} to ${nw} words.`);
-    return { warnings, untick };
+    if (op.type === 'add' && nw > 50 && !headingInfo(op.result.find(l => l.trim()) || '')) problem(`The new line is ${nw} words long.`);
+    if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) problem(`The line grows from ${ow} to ${nw} words.`);
+    return { warnings, problems, untick: untick || problems.length > 0 };
 }
 
 /** Word-level diff. @returns {{type: 'same'|'add'|'del', text: string}[]} */

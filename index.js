@@ -10,12 +10,12 @@ import {
     checkSystemPrompt, checkUserPrompt, parseCheck, findRepeats, lineLabels,
     numberCard, sectionSpans, parseOps, resolveOps, applyOps, normalizeLogLines, opsCheckSystemPrompt, opsCheckUserPrompt,
     parseOpsCheck, fixSystemPrompt, fixUserPrompt, opWarnings, opRepeats, wordDiff,
-    storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines,
+    storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines, dayLabelOps,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.7.0'; // keep in step with manifest.json
+const VERSION = '0.7.1'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -577,6 +577,14 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
         }
     }
 
+    // Day labels already on the card that are broken or disagree with the chat headers.
+    const changed = new Set(ops.filter(o => !o.invalid && o.type !== 'add').map(o => o.index));
+    const labelFixes = dayLabelOps(content, dates, editableRanges(content)).filter(o => !changed.has(o.line - 1));
+    if (labelFixes.length) {
+        const first = Math.max(0, ...ops.map(o => o.id));
+        ops = resolveOps(content, [...ops, ...labelFixes.map((o, k) => ({ ...o, id: first + k + 1 }))], ranges, { dates });
+    }
+
     // Step 3: check the changes against the log and the card, fix what the check finds, check the fixes.
     let result;
     try {
@@ -598,7 +606,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     const c = ctx();
     const title = job.card.title;
     const out = { ops: firstOps, dropped: [], stale: [], general: [], check: { ran: false }, fix: { ran: false }, recheck: { ran: false }, conflicts: [], raws: [] };
-    const live = firstOps.filter(op => !op.invalid);
+    const live = firstOps.filter(op => !op.invalid && op.source !== 'dates');
     if (!s.checkDrafts || !live.length) return out;
     const say = what => status?.text(`${title} (${counter}): ${what}… ${elapsed()}`);
 
@@ -639,7 +647,13 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     // Changes that couldn't be placed (quoted words not in the line, no such line) can be fixed too.
     const broken = firstOps.filter(o => o.invalid && /not in line|has no line|is blank/.test(o.invalid));
     for (const op of broken) op.found = [{ kind: 'placement', text: op.invalid }];
-    const flagged = [...live.filter(op => op.found?.length), ...broken];
+    // Rule breaks the code finds (a chain of dates, a clock time, a wrong day label…) go to the fix step too.
+    const personaNames = nameVariants(c.name1 || '');
+    for (const op of live) {
+        const w = opWarnings(op, { personaNames, dates: job.dates });
+        if (w.problems.length) op.codeProblems = w.problems;
+    }
+    const flagged = [...live.filter(op => op.found?.length || op.codeProblems?.length), ...broken];
     const fixable = out.stale.filter(x => x.editable);
     if (!s.fixDrafts || (!flagged.length && !fixable.length)) return out;
 
@@ -648,7 +662,9 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     try {
         fixReply = await sendWithRetry(s, fixSystemPrompt(c.name1), fixUserPrompt({
             card: job.numbered, title, sections: job.sections, log: job.log, trackers: job.trackers, storyDate: job.storyDate,
-            ops: [...live, ...broken].sort((a, b) => a.id - b.id), problems: flagged.flatMap(op => op.found.map(f => ({ id: op.id, ...f }))), stale: fixable,
+            ops: [...live, ...broken].sort((a, b) => a.id - b.id),
+            problems: flagged.flatMap(op => [...(op.found || []).map(f => ({ id: op.id, ...f })), ...(op.codeProblems || []).map(t => ({ id: op.id, kind: 'rule', text: t }))]),
+            stale: fixable,
             tokens: job.tokens, limit: job.limit, days: job.days,
         }), { signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('fixing what the check found') });
         out.raws.push(['Fix reply', fixReply]);
@@ -680,7 +696,8 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
         const target = raw.ref !== null ? ops.find(o => o.id === raw.ref) : null;
         if (target) {
             if (target.dropped || revisedIds.has(target.id)) continue;
-            const next = { ...raw, id: target.id, source: target.source, fixed: true, firstFound: target.found || [], firstText: target.type === 'remove' ? '' : target.result.join('\n'), firstType: target.type };
+            const firstFound = [...(target.found || []), ...(target.codeProblems || []).map(t => ({ kind: 'rule', text: t }))];
+            const next = { ...raw, id: target.id, source: target.source, fixed: true, firstFound, firstText: target.type === 'remove' ? '' : target.result.join('\n'), firstType: target.type };
             delete next.ref;
             ops[ops.indexOf(target)] = next;
             revisedIds.add(target.id);
@@ -772,17 +789,17 @@ function opHead(op) {
     return `${TYPE_TEXT[op.type]} ${where}`;
 }
 
-const FOUND_TEXT = { lost: 'Lost', unsupported: 'Not in the log', wrong: 'Wrong', twice: 'Said twice', passing: 'Passing state', placement: 'Could not be placed' };
+const FOUND_TEXT = { lost: 'Lost', unsupported: 'Not in the log', wrong: 'Wrong', twice: 'Said twice', passing: 'Passing state', placement: 'Could not be placed', rule: 'Breaks a rule' };
 
 function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) {
     const { card, content } = job;
     const tookText = () => (typeof took === 'function' ? took() : took);
     const personaNames = nameVariants(ctx().name1 || '');
     const ignoreNames = [...(card.names || []), ...personaNames];
-    const items = result.ops.filter(op => op.invalid !== 'It leaves the line as it is.').map((op) => {
-        const w = opWarnings(op, { personaNames });
+    const items = result.ops.filter(op => op.invalid !== 'It leaves the line as it is.' && !(op.source === 'dates' && op.invalid)).map((op) => {
+        const w = opWarnings(op, { personaNames, dates: job.dates });
         const problems = (op.found || []).length > 0;
-        return { op, baseWarnings: w.warnings, accept: !op.invalid && !w.untick && !problems };
+        return { op, baseWarnings: w.warnings, problems: w.problems, accept: !op.invalid && !w.untick && !problems };
     });
     items.sort((a, b) => (a.op.index ?? 1e9) - (b.op.index ?? 1e9) || (a.op.type === 'add') - (b.op.type === 'add') || a.op.id - b.op.id);
 
@@ -830,7 +847,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
         const rc = result.recheck;
         if (rc.failed) text += ` Checking the fixes failed (${rc.failed}).`;
         else if (rc.ran) text += rc.problems ? ` Still ${rc.problems} problem${rc.problems === 1 ? '' : 's'} after the fix.` : ' The fixes check out.';
-        const flaggedLeft = items.some(it => (it.op.found || []).length);
+        const flaggedLeft = items.some(it => (it.op.found || []).length || (it.problems || []).length);
         if (flaggedLeft) text += ' Changes with a problem come unticked.';
         const bad = !!(ch.problems || ch.staleFound) && (flaggedLeft || stale.length);
         return `<div class="${bad ? 'cu-warn' : 'cu-ok'}">${esc(text)}</div>${result.general.map(p => `<div class="cu-warn">${esc(FOUND_TEXT[p.kind] || p.kind)}: ${esc(p.text.slice(0, 300))}</div>`).join('')}`;
@@ -892,6 +909,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             if (op.fixed && op.firstFound?.length) notes.push(`Fixed after the check (${op.firstFound.map(f => FOUND_TEXT[f.kind] || f.kind).join(', ').toLowerCase()}).`);
             if (op.source === 'stale') notes.push('Added after the check found the line no longer true.');
             if (op.source === 'sweep') notes.push('Found by the pass for lines that are no longer true.');
+            if (op.source === 'dates') notes.push('Day label checked against the chat headers.');
             html += `<div class="cu-item${op.invalid ? ' cu-invalid' : ''}">
                 <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}${op.invalid ? ' disabled' : ''}><b>${esc(opHead(op))}</b></label>
                 ${op.reason ? `<div class="cu-muted">${esc(op.reason)}</div>` : ''}
@@ -913,8 +931,9 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             if (!value.trim()) return;
             it.op.result = value.split('\n');
             if (it.op.found?.length) it.editedAfterCheck = true;
-            const w = opWarnings({ ...it.op, find: null }, { personaNames });
+            const w = opWarnings({ ...it.op, find: null }, { personaNames, dates: job.dates });
             it.baseWarnings = w.warnings;
+            it.problems = w.problems;
             render();
         });
         block.find('.cu-save').on('click', () => saveOps(card, content, items, job.storyDate, block, logInfo));

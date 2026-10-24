@@ -872,3 +872,66 @@ test('0.7: Tighten may condense the player\'s own entry by default, and flags on
     assert.ok(t.includes('at most eight dated lines') && t.includes('Write dates in full, as listed under STORY DAYS'));
     assert.ok(U.tightenUserPrompt({ card: 'C', title: 'J', sections: ['HISTORY'], tokens: 7800, limit: 5000, days: 'STORY DAYS: x' }).includes('STORY DAYS: x'));
 });
+
+// ---------------------------------------------------------------- 0.7.1
+
+const D11 = new Map([[1, 'Day 1 - Saturday 17 May'], [9, 'Day 9 - Sunday 25 May'], [10, 'Day 10 - Monday 26 May'], [11, 'Day 11 - Tuesday 27 May']]);
+
+test('0.7.1: "Day 1" never matches the start of "Day 10"', () => {
+    assert.equal(U.expandLeadDate('  - Day 10 - Monday 26 May: she told Ellis.', D11), '  - Day 10 - Monday 26 May: she told Ellis.');
+    assert.equal(U.expandLeadDate('  - Day 10, evening: x', D11), '  - Day 10 - Monday 26 May, evening: x');
+    assert.equal(U.expandLeadDate('  - Day 1: x', D11), '  - Day 1 - Saturday 17 May: x');
+    assert.deepEqual(U.normalizeLogLines(['- Day 10 - Monday 26 May, evening: a', '- Day 11, ~3 PM: b'], D11), ['- Day 10 - Monday 26 May, evening: a', '- Day 11 - Tuesday 27 May: b']);
+});
+
+test('0.7.1: day labels are checked against the chat headers; labels broken by 0.7.0 are repaired', () => {
+    assert.deepEqual(U.checkDayLabels('  - Day 1 - Saturday 17 May0 - Monday 26 May, evening: she told Ellis.', D11), { line: '  - Day 10 - Monday 26 May, evening: she told Ellis.', repaired: true, mismatches: [] });
+    assert.deepEqual(U.checkDayLabels('  - Day 9 - Monday 26 May: x', D11).mismatches, [{ found: 'Day 9 - Monday 26 May', want: 'Day 10 - Monday 26 May' }]);
+    assert.deepEqual(U.checkDayLabels('  - Day 11 - Tuesday 27 May: x; since Day 10 - Monday 26 May.', D11).mismatches, []);
+    assert.deepEqual(U.checkDayLabels('  - Day 30 - Monday 26 June: x', D11).mismatches, [], 'days the headers don\'t name are left alone');
+    const card = 'RELATIONSHIPS\nLEON\n- Shared history:\n  - Day 1 - Saturday 17 May0 - Monday 26 May: she told Ellis.\n  - Day 9 - Monday 26 May: x\n  - Day 11 - Tuesday 27 May: y';
+    const ops = U.dayLabelOps(card, D11, U.editableRanges(card));
+    assert.deepEqual(ops.map(o => [o.line, o.text, o.dateFix]), [
+        [4, '  - Day 10 - Monday 26 May: she told Ellis.', 'repair'],
+        [5, '  - Day 10 - Monday 26 May: x', 'mismatch'],
+    ]);
+    const resolved = U.resolveOps(card, ops.map((o, k) => ({ ...o, id: k + 1 })), U.updatableRanges(card), { dates: D11 });
+    const w = resolved.map(o => U.opWarnings(o, { dates: D11 }));
+    assert.equal(w[0].untick, false, 'a repair is certain');
+    assert.ok(w[1].untick && w[1].warnings[0].startsWith('Check which is right'), 'a disagreement is for you to decide');
+});
+
+test('0.7.1: what the model writes gets broken labels repaired, and wrong labels flagged as a rule break', () => {
+    const card = 'RELATIONSHIPS\nLEON\n- Shared history:\n  - Day 9 - Sunday 25 May: she moved in.';
+    const [a, b] = U.resolveOps(card, [
+        { id: 1, type: 'add', line: 4, find: null, text: '  - Day 1 - Saturday 17 May0 - Monday 26 May: she told Ellis.' },
+        { id: 2, type: 'add', line: 4, find: null, text: '  - Day 9 - Tuesday 27 May: she went back for her paints.' },
+    ], U.updatableRanges(card), { dates: D11 });
+    assert.deepEqual(a.result, ['  - Day 10 - Monday 26 May: she told Ellis.']);
+    const w = U.opWarnings(b, { dates: D11 });
+    assert.ok(w.untick && w.problems.some(p => p.includes('"Day 9 - Tuesday 27 May" doesn\'t match the chat headers, which have "Day 11 - Tuesday 27 May"')));
+});
+
+test('0.7.1: rule breaks are problems: they untick the change and go to the fix step', () => {
+    const card = 'RELATIONSHIPS\nLEON\n- Now: her boyfriend.\n- Shared history:\n  - Day 9 - Sunday 25 May: she moved in.';
+    const ranges = U.updatableRanges(card);
+    const [chain] = U.resolveOps(card, [{ id: 1, type: 'edit', line: 3, find: null, text: '- Now: her boyfriend since Day 9; since Day 10 she has told Ellis; since Day 11 she has no key.' }], ranges);
+    const wc = U.opWarnings(chain);
+    assert.ok(wc.untick && wc.problems.length === 1 && wc.problems[0].startsWith('Reads as a chain of dates'));
+    const [clock] = U.resolveOps(card, [{ id: 1, type: 'add', line: 5, find: null, text: '  - Day 10 - Monday 26 May: she told Ellis at 9:15 PM.' }], ranges);
+    assert.ok(U.opWarnings(clock).untick && U.opWarnings(clock).problems[0].startsWith('Clock time'));
+    const [cut] = U.resolveOps(card, [{ id: 1, type: 'edit', line: 3, find: null, text: '- Now: hers.' }], ranges);
+    assert.deepEqual(U.opWarnings(cut).problems, [], 'what an edit cuts is shown, not a rule break');
+    assert.ok(U.fixUserPrompt({ card: 'C', title: 'J', sections: [], log: [], ops: [chain], problems: [{ id: 1, kind: 'rule', text: 'Reads as a chain of dates.' }], stale: [] }).includes('#1 BREAKS A RULE: Reads as a chain of dates.'));
+});
+
+test('0.7.1: whole lines and agreeing changes are checked; story slips are kept out of the log', () => {
+    const card = 'IDENTITY\n- Lives with Leon; she broke it with Leon; Ellis does not know.';
+    const [op] = U.resolveOps(card, [{ id: 1, type: 'edit', line: 2, find: 'Lives with Leon', text: 'Lived with Ellis until Day 10' }], U.updatableRanges(card));
+    assert.ok(U.describeOp(op).includes('NEW LINE: - Lived with Ellis until Day 10; she broke it with Leon; Ellis does not know.'));
+    const sys = U.systemPrompt('Leon');
+    assert.ok(sys.includes('read the whole line as it will read afterwards against what is true now') && sys.includes('Every fact you write must agree with your other changes'));
+    const chk = U.opsCheckSystemPrompt('Leon');
+    assert.ok(chk.includes("Read each change's whole new line") && chk.includes('Two changes that state facts that disagree with each other'));
+    assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('When the story contradicts itself'));
+});

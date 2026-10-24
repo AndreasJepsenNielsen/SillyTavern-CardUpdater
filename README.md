@@ -113,17 +113,24 @@ themselves (also the hidden ones) or the summary pieces that cover them.
 - PERSONALITY only changes when the story shows a lasting change. Those rows are unticked by default and flagged.
 - CANON POINT gets "updated with the story up to [date]" so the card doesn't claim nothing has happened since.
 
-Warnings in yellow, about what the change itself adds (never about what the line already said):
+Warnings in yellow, about what the change itself adds (never about what the line already said). Those marked
+**rule** are rule breaks: they go to the fix step with what the check found, and a change that still has one comes
+unticked.
 
 - a personality change (unticked);
-- anything involving your persona added to HISTORY or KNOWLEDGE (unticked: it belongs in their entry for you);
+- **rule:** anything involving your persona added to HISTORY or KNOWLEDGE (it belongs in their entry for you);
 - a change outside the sections you ticked (unticked);
-- a clock time, or words that count from a day;
+- **rule:** a clock time, words that count from a day, `[check: …]`, or a day label whose number and date don't
+  match the chat headers;
 - what an edit cuts from its line ("Cuts from the line: …"), or names and numbers it no longer has;
-- a new line over 50 words, or a line that grows a lot;
+- **rule:** a new line over 50 words, or a line that grows a lot;
 - a new line that is mostly the same words as another line of the card, with that line's closest sentence;
 - a line number that was off by one and was moved to the line it plainly fits, or a dated line put in date order;
-- a Now or Wants line that reads as a chain of dates.
+- **rule:** a Now or Wants line that reads as a chain of dates.
+
+Day labels already on the card are checked against the chat headers on every update. A label broken by 0.7.0's
+date bug ("Day 1 - Saturday 17 May0 - Monday 26 May") gets a ticked change back to "Day 10 - Monday 26 May"; a
+label whose number and date disagree gets an unticked change to the header label for that date.
 
 ## What the updates keep
 
@@ -150,7 +157,9 @@ the update changes that line if its section is ticked, or reports it. Reports sh
 
 ## The check pass and the fix
 
-The check reads every change, also those from the pass for lines no longer true.
+The check reads every change, also those from the pass for lines no longer true. It reads each change's whole new
+line, not only the words that changed, so a clause left standing that is no longer true is caught, and it compares
+the changes with each other: two changes that state facts that disagree are both flagged.
 
 After each draft, one more request reads every change next to the numbered card, the log and the tracker rows, and
 reports:
