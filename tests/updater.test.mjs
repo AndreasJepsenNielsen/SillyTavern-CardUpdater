@@ -658,7 +658,7 @@ test('0.6: check of a change list: prompt, problems by change number, stale line
     const r = U.parseOpsCheck('<problem change="2" kind="twice">first sex -> line 25 says it</problem><problem change="9" kind="Invented">x</problem><stale line="12">she has none -> Leon is now her closest person, Day 7</stale>');
     assert.deepEqual(r.problems.map(p => `${p.id}:${p.kind}`), ['2:twice', '9:unsupported']);
     assert.deepEqual(r.stale, [{ line: 12, text: 'she has none -> Leon is now her closest person, Day 7' }]);
-    assert.deepEqual(U.parseOpsCheck('<ok/>'), { problems: [], stale: [] });
+    assert.deepEqual(U.parseOpsCheck('<ok/>'), { problems: [], stale: [], missing: [] });
     assert.equal(U.parseOpsCheck('Looks fine to me.'), null);
 });
 
@@ -934,4 +934,48 @@ test('0.7.1: whole lines and agreeing changes are checked; story slips are kept 
     const chk = U.opsCheckSystemPrompt('Leon');
     assert.ok(chk.includes("Read each change's whole new line") && chk.includes('Two changes that state facts that disagree with each other'));
     assert.ok(U.logSystemPrompt('Jules', 'Leon').includes('When the story contradicts itself'));
+});
+
+// ---------------------------------------------------------------- 0.8.0
+
+const NOTEBOOK_CHAT = [
+    { mes: 'old <internal_states><details><summary>📓 GM\'S NOTEBOOK</summary>\n1. [R] Jules has heard from Leon: old line.\n</details></internal_states>' },
+    { mes: 'Newest reply.\n<!-- GFX_START --><internal_states><details><summary>📓 GM\'S NOTEBOOK</summary>\n1. [R] Jules has heard from Leon: his mother killed herself.\n2. [R] Jules has heard where Leon stands: he wants her to move in for good.\n3. [R] Jules told Leon: she finishes maybe once a month.\n4. [R] Dez has heard from Leon: something else.\n5. [R] Jules knows the desk man talks.\n- [R] [Jules] told [Leon]: she tells Ellis on Tuesday.\n</details></internal_states><!-- GFX_END -->' },
+    { is_user: true, mes: 'My turn, no notebook.' },
+];
+
+test('0.8: notebook rows on what the character heard and told are read from the newest notebook', () => {
+    assert.deepEqual(U.notebookLines(NOTEBOOK_CHAT, ['Jules', 'Jules Vaughn']), [
+        '[R] Jules has heard from Leon: his mother killed herself.',
+        '[R] Jules has heard where Leon stands: he wants her to move in for good.',
+        '[R] Jules told Leon: she finishes maybe once a month.',
+        '[R] [Jules] told [Leon]: she tells Ellis on Tuesday.',
+    ]);
+    assert.deepEqual(U.notebookLines([{ mes: 'no block' }], ['Jules']), []);
+    const t = U.trackerLines(NOTEBOOK_CHAT, ['Jules']);
+    assert.ok(t.includes('[R] Jules knows the desk man talks.') && !t.includes('has heard from') && !t.includes('told Leon'), 'tracker rows leave them out; they get their own block');
+});
+
+test('0.8: the update must put every notebook line on the card; the check reports the ones it did not', () => {
+    const nb = U.notebookLines(NOTEBOOK_CHAT, ['Jules']);
+    const up = U.userPrompt({ card: 'C', title: 'Jules', sections: ['RELATIONSHIPS (lines 1-9)'], log: [], notebook: nb });
+    assert.ok(up.includes("NOTEBOOK: WHAT Jules HAS HEARD FROM THE PLAYER'S CHARACTER") && up.includes('<notebook>\n[R] Jules has heard from Leon: his mother killed herself.'));
+    assert.ok(!U.userPrompt({ card: 'C', title: 'Jules', sections: [], log: [] }).includes('NOTEBOOK'), 'no block without notebook lines');
+    const sys = U.systemPrompt('Leon');
+    assert.ok(sys.includes('keep a Knows list of what this character has learned about Leon') && sys.includes('NOTEBOOK lines (when given)') && sys.includes('what they learned about Leon or told Leon (every NOTEBOOK line)'));
+    const chk = U.opsCheckUserPrompt({ card: 'C', title: 'Jules', ops: [], log: [], notebook: nb });
+    assert.ok(chk.includes('NOTEBOOK LINES (the card, with the changes, must hold every one'));
+    assert.ok(!U.opsCheckUserPrompt({ card: 'C', title: 'Jules', ops: [], log: [], notebook: nb, only: [] }).includes('NOTEBOOK LINES'), 'the re-check of fixes does not get them');
+    assert.ok(U.opsCheckSystemPrompt('Leon').includes('<missing>the notebook line, as it reads</missing>'));
+    assert.deepEqual(U.parseOpsCheck('<missing>[R] Jules told Leon: she finishes maybe once a month.</missing>').missing, ['[R] Jules told Leon: she finishes maybe once a month.']);
+    const fx = U.fixUserPrompt({ card: 'C', title: 'J', sections: [], log: [], ops: [], problems: [], stale: [], missing: ['[R] Jules told Leon: x.'] });
+    assert.ok(fx.includes("NOTEBOOK LINES THE CARD DOESN'T HOLD YET (the game deletes them after this update):\n1. [R] Jules told Leon: x."));
+    assert.ok(U.fixSystemPrompt('Leon').includes('<change missing="1" type="add" after="80">'));
+    assert.equal(U.parseOps('<change missing="2" type="add" after="9"><new>- Knows: x.</new></change>').ops[0].missing, 2);
+    assert.ok(U.tightenSystemPrompt('Leon').includes('Its Knows list keeps every item that is still true'));
+});
+
+test('0.8: the canon point keeps one form', () => {
+    assert.equal(U.canonPointBody('Portrayed after the slap. Nothing after this has happened.', 'Day 11 - Tuesday 27 May'), 'Portrayed after the slap, updated with the story up to Day 11 - Tuesday 27 May. Nothing after this has happened.');
+    assert.equal(U.canonPointBody('Portrayed after the slap, updated with the story up to Day 9 - Sunday 25 May. Nothing after.', 'Day 11 - Tuesday 27 May'), 'Portrayed after the slap, updated with the story up to Day 11 - Tuesday 27 May. Nothing after.');
 });

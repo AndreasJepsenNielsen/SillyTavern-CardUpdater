@@ -10,12 +10,12 @@ import {
     checkSystemPrompt, checkUserPrompt, parseCheck, findRepeats, lineLabels,
     numberCard, sectionSpans, parseOps, resolveOps, applyOps, normalizeLogLines, opsCheckSystemPrompt, opsCheckUserPrompt,
     parseOpsCheck, fixSystemPrompt, fixUserPrompt, opWarnings, opRepeats, wordDiff,
-    storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines, dayLabelOps,
+    storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines, dayLabelOps, notebookLines,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.7.1'; // keep in step with manifest.json
+const VERSION = '0.8.0'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -239,7 +239,8 @@ function planCard(card, rebuild) {
     const kept = filterForCharacter(items, card.names);
     const chunks = chunkItems(kept, CHUNK_CHARS);
     const pending = log ? log.lines.length - (log.applied || 0) : 0;
-    return { key, log, since, end, chunks, pending, readChars: chunks.reduce((a, ch) => a + ch.text.length, 0) };
+    const notebook = notebookLines(c.chat, card.names).length;
+    return { key, log, since, end, chunks, pending, notebook, readChars: chunks.reduce((a, ch) => a + ch.text.length, 0) };
 }
 
 function planText(card, plan, relog = false) {
@@ -253,6 +254,7 @@ function planText(card, plan, relog = false) {
     if (relog && plan.log) parts.push(`updates from all ${plan.log.lines.length} logged lines`);
     else if (plan.pending) parts.push(`${plan.pending} logged line${plan.pending === 1 ? '' : 's'} not in the card yet`);
     if (plan.log) parts.push(`log has ${plan.log.lines.length} line${plan.log.lines.length === 1 ? '' : 's'}`);
+    if (plan.notebook) parts.push(`${plan.notebook} notebook line${plan.notebook === 1 ? '' : 's'} on what they heard and told`);
     return `${card.title}: ${parts.join(' · ')}`;
 }
 
@@ -519,6 +521,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
         sections: sectionSpans(content, ranges),
         log: normalizeLogLines(newLines, dates),
         trackers: trackerLines(c.chat, card.names),
+        notebook: notebookLines(c.chat, card.names),
         storyDate: storyDateFrom(c.chat),
         tokens: approxTokens(content.length),
         limit: Number(s.cardLimit) || 0,
@@ -529,7 +532,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
     try {
         reply = await sendWithRetry(s, systemPrompt(c.name1), userPrompt({
             card: job.numbered, title: card.title, sections: job.sections, log: job.log,
-            trackers: job.trackers, storyDate: job.storyDate, tokens: job.tokens, limit: job.limit, days: job.days,
+            trackers: job.trackers, storyDate: job.storyDate, tokens: job.tokens, limit: job.limit, days: job.days, notebook: job.notebook,
         }), {
             signal,
             reasoning: s.updateThinking,
@@ -605,20 +608,21 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
 async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed, progress }) {
     const c = ctx();
     const title = job.card.title;
-    const out = { ops: firstOps, dropped: [], stale: [], general: [], check: { ran: false }, fix: { ran: false }, recheck: { ran: false }, conflicts: [], raws: [] };
+    const out = { ops: firstOps, dropped: [], stale: [], missing: [], missingLeft: [], general: [], check: { ran: false }, fix: { ran: false }, recheck: { ran: false }, conflicts: [], raws: [] };
     const live = firstOps.filter(op => !op.invalid && op.source !== 'dates');
-    if (!s.checkDrafts || !live.length) return out;
+    if (!s.checkDrafts || (!live.length && !job.notebook.length)) return out;
     const say = what => status?.text(`${title} (${counter}): ${what}… ${elapsed()}`);
 
     say('checking the changes');
     let found;
     try {
-        const reply = await sendWithRetry(s, opsCheckSystemPrompt(c.name1), opsCheckUserPrompt({ card: job.numbered, title, ops: live, log: job.log, trackers: job.trackers }), {
+        const reply = await sendWithRetry(s, opsCheckSystemPrompt(c.name1), opsCheckUserPrompt({ card: job.numbered, title, ops: live, log: job.log, trackers: job.trackers, notebook: job.notebook }), {
             signal, reasoning: s.checkThinking, onProgress: progress('checking the changes'),
         });
         out.raws.push(['Check reply', reply]);
         found = parseOpsCheck(reply);
         out.check = found ? { ran: true, problems: found.problems.length, staleFound: found.stale.length } : { ran: true, failed: 'The check reply could not be read.' };
+        if (found) out.missing = [...new Set(found.missing)];
     } catch (err) {
         if (signal?.aborted) throw err;
         console.error(LOG, err);
@@ -655,16 +659,17 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     }
     const flagged = [...live.filter(op => op.found?.length || op.codeProblems?.length), ...broken];
     const fixable = out.stale.filter(x => x.editable);
-    if (!s.fixDrafts || (!flagged.length && !fixable.length)) return out;
+    out.missingLeft = out.missing.slice();
+    if (!s.fixDrafts || (!flagged.length && !fixable.length && !out.missing.length)) return out;
 
-    say(`fixing ${[flagged.length ? `${flagged.length} change${flagged.length === 1 ? '' : 's'}` : '', fixable.length ? `${fixable.length} stale line${fixable.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')}`);
+    say(`fixing ${[flagged.length ? `${flagged.length} change${flagged.length === 1 ? '' : 's'}` : '', fixable.length ? `${fixable.length} stale line${fixable.length === 1 ? '' : 's'}` : '', out.missing.length ? `${out.missing.length} missing notebook line${out.missing.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')}`);
     let fixReply;
     try {
         fixReply = await sendWithRetry(s, fixSystemPrompt(c.name1), fixUserPrompt({
             card: job.numbered, title, sections: job.sections, log: job.log, trackers: job.trackers, storyDate: job.storyDate,
             ops: [...live, ...broken].sort((a, b) => a.id - b.id),
             problems: flagged.flatMap(op => [...(op.found || []).map(f => ({ id: op.id, ...f })), ...(op.codeProblems || []).map(t => ({ id: op.id, kind: 'rule', text: t }))]),
-            stale: fixable,
+            stale: fixable, missing: out.missing,
             tokens: job.tokens, limit: job.limit, days: job.days,
         }), { signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('fixing what the check found') });
         out.raws.push(['Fix reply', fixReply]);
@@ -676,7 +681,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     }
     const fx = parseOps(fixReply);
     out.conflicts.push(...fx.conflicts);
-    const summary = { ran: true, fixed: 0, dropped: 0, kept: 0, staleFixed: 0 };
+    const summary = { ran: true, fixed: 0, dropped: 0, kept: 0, staleFixed: 0, missingAdded: 0 };
     let ops = [...firstOps];
     for (const d of fx.drops) {
         const op = ops.find(o => o.id === d.ref && !o.dropped);
@@ -702,6 +707,11 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
             ops[ops.indexOf(target)] = next;
             revisedIds.add(target.id);
             summary.fixed++;
+        } else if (raw.ref === null && raw.missing) {
+            const id = nextId++;
+            ops.push({ ...raw, id, source: 'missing', missingFor: raw.missing });
+            revisedIds.add(id);
+            summary.missingAdded++;
         } else if (raw.ref === null) {
             const id = nextId++;
             ops.push({ ...raw, id, source: 'stale', staleFor: raw.stale ?? (raw.type === 'add' ? null : raw.line) });
@@ -718,6 +728,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
         const by = ops.find(o => !o.invalid && o.source === 'stale' && (o.staleFor === x.line || (o.type !== 'add' && o.index === x.line - 1)));
         if (by) x.fixedBy = by.id;
     }
+    out.missingLeft = out.missing.filter((m, k) => !ops.some(o => !o.invalid && o.source === 'missing' && o.missingFor === k + 1));
 
     const recheck = ops.filter(o => revisedIds.has(o.id) && !o.invalid);
     if (!recheck.length) return out;
@@ -812,7 +823,12 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
         if (i < canon.end) {
             const next = canonPointBody(lines[i], job.storyDate);
             if (next !== lines[i].trim() && !result.ops.some(o => !o.invalid && o.type !== 'add' && o.index === i)) {
-                items.push({ op: { id: 'canon', type: 'edit', kind: 'canon', label: canon.title, index: i, line: i + 1, oldLine: lines[i], result: [lines[i].match(/^\s*/)[0] + next], reason: `Marks the card as updated to ${job.storyDate}.`, find: null }, baseWarnings: [], accept: true });
+                // The chat preset deletes its notebook lines once the card is stamped: only stamp when they are all on the card.
+                const unsure = job.notebook.length && (!result.check.ran || result.check.failed || result.missingLeft.length);
+                const canonWarn = !unsure ? [] : [result.missingLeft.length
+                    ? 'Some notebook lines aren\'t on the card yet (listed at the top). Stamping now lets the chat preset delete them.'
+                    : 'The check didn\'t run, so it isn\'t known whether every notebook line is on the card. Stamping lets the chat preset delete them.'];
+                items.push({ op: { id: 'canon', type: 'edit', kind: 'canon', label: canon.title, index: i, line: i + 1, oldLine: lines[i], result: [lines[i].match(/^\s*/)[0] + next], reason: `Marks the card as updated to ${job.storyDate}.`, find: null }, baseWarnings: canonWarn, accept: !unsure });
             }
         }
     }
@@ -822,6 +838,9 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
         ...stale.map(x => `line ${x.line} (${x.label}): ${x.text}${x.allowed ? '' : ' — not in the sections you ticked'}`),
         ...(parsed.conflicts || []), ...(result.conflicts || []),
     ];
+    const missingHtml = result.missingLeft.length
+        ? `<div class="cu-conflicts"><div class="cu-warn"><b>Notebook lines not on the card yet</b> (the chat preset deletes them once the canon point is stamped; add them before you save it):</div>${result.missingLeft.map(x => `<div class="cu-warn">• ${esc(x)}</div>`).join('')}</div>`
+        : '';
     const outdatedHtml = outdated.length
         ? `<div class="cu-conflicts"><div class="cu-warn"><b>Lines that may no longer be true</b> (no change below covers them; fix them in the lorebook if they are right):</div>${outdated.map(x => `<div class="cu-warn">• ${esc(x)}</div>`).join('')}</div>`
         : '';
@@ -833,6 +852,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
         const parts = [];
         parts.push(ch.problems ? `${ch.problems} problem${ch.problems === 1 ? '' : 's'} in the changes` : 'no problems in the changes');
         if (ch.staleFound) parts.push(`${ch.staleFound} line${ch.staleFound === 1 ? '' : 's'} on the card no longer true`);
+        if (result.missing.length) parts.push(`${result.missing.length} notebook line${result.missing.length === 1 ? '' : 's'} not on the card`);
         let text = `Check: ${parts.join(', ')}.`;
         const fx = result.fix;
         if (fx.failed) text += ` Fixing failed (${fx.failed}).`;
@@ -842,6 +862,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             if (fx.dropped) did.push(`${fx.dropped} dropped`);
             if (fx.kept) did.push(`${fx.kept} kept as they were`);
             if (fx.staleFixed) did.push(`${fx.staleFixed} outdated line${fx.staleFixed === 1 ? '' : 's'} changed`);
+            if (fx.missingAdded) did.push(`${fx.missingAdded} notebook line${fx.missingAdded === 1 ? '' : 's'} added`);
             if (did.length) text += ` Fix: ${did.join(', ')}.`;
         }
         const rc = result.recheck;
@@ -857,13 +878,14 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
     const dropped = result.dropped.length
         ? `<details><summary>Dropped after the check (${result.dropped.length})</summary>${result.dropped.map(op => `<div class="cu-dropped"><div><b>${esc(opHead(op))}</b> <span class="cu-muted">${esc(op.label || '')}</span></div>${(op.found || []).map(f => `<div class="cu-warn">${esc(FOUND_TEXT[f.kind])}: ${esc(f.text)}</div>`).join('')}<div class="cu-muted">${esc(op.dropped)}</div>${op.result?.length ? `<div class="cu-diff"><div class="cu-add">${esc(op.result.join('\n'))}</div></div>` : ''}</div>`).join('')}</details>`
         : '';
+    const notebookList = job.notebook.length ? `<details><summary>Notebook lines read (${job.notebook.length})</summary><pre class="cu-pre">${esc(job.notebook.join('\n'))}</pre></details>` : '';
     const nowList = (parsed.now || []).length ? `<details><summary>What is true now, according to the update (${parsed.now.length})</summary><pre class="cu-pre">${esc(parsed.now.join('\n'))}</pre></details>` : '';
-    const tail = `${dropped}${nowList}${logInfo ? logDetails(logInfo.newLines) : ''}${raws}`;
+    const tail = `${dropped}${nowList}${notebookList}${logInfo ? logDetails(logInfo.newLines) : ''}${raws}`;
     const sw = result.sweep || { ran: false };
     const sweepLine = !sw.ran ? ''
         : sw.failed ? `<div class="cu-warn">The pass for lines that are no longer true failed (${esc(sw.failed)}), so look over the card yourself.</div>`
             : `<div class="cu-muted">Lines no longer true: ${sw.changes ? `${sw.changes} change${sw.changes === 1 ? '' : 's'} found.` : 'none found.'}</div>`;
-    const head = cardHead(card, tookText()) + editedNote(edited) + sweepLine + checkLine + outdatedHtml;
+    const head = cardHead(card, tookText()) + editedNote(edited) + sweepLine + checkLine + missingHtml + outdatedHtml;
     const real = items.filter(it => it.op.kind !== 'canon');
 
     const markDone = async () => {
@@ -910,6 +932,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             if (op.source === 'stale') notes.push('Added after the check found the line no longer true.');
             if (op.source === 'sweep') notes.push('Found by the pass for lines that are no longer true.');
             if (op.source === 'dates') notes.push('Day label checked against the chat headers.');
+            if (op.source === 'missing') notes.push('Added after the check found a notebook line the card didn\'t hold.');
             html += `<div class="cu-item${op.invalid ? ' cu-invalid' : ''}">
                 <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}${op.invalid ? ' disabled' : ''}><b>${esc(opHead(op))}</b></label>
                 ${op.reason ? `<div class="cu-muted">${esc(op.reason)}</div>` : ''}

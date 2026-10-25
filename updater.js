@@ -242,11 +242,36 @@ export function trackerLines(chat, names) {
                 section = t.slice(3).trim();
                 continue;
             }
+            if (notebookItem(t, names)) continue; // these go to the update as their own block
             if (mentionsAny(t, names)) out.push(section ? `${section}: ${t}` : t);
         }
         return out.join('\n');
     }
     return '';
+}
+
+const NOTEBOOK_RE = /^(?:[-*•]\s*|\d+[.)]\s*)?\[R\]\s*(.{1,80}?)\s+(has heard from|has heard where|told)\b/i;
+
+/** The notebook line as it reads, if it is one of the character's "has heard from / has heard where / told" rows. */
+function notebookItem(line, names) {
+    const t = String(line ?? '').trim();
+    const m = t.match(NOTEBOOK_RE);
+    if (!m || !mentionsAny(m[1].replace(/[[\]]/g, ''), names)) return null;
+    return t.replace(/^(?:[-*•]\s*|\d+[.)]\s*)/, '');
+}
+
+/**
+ * The GM's Notebook rows about what the character heard from the player's character, where the player's character
+ * stands with them, and what they told the player's character, from the newest message that has a notebook. The chat
+ * preset deletes these rows once the card says it was updated past them, so the card has to hold them first.
+ */
+export function notebookLines(chat, names) {
+    for (let i = (chat?.length || 0) - 1; i >= 0; i--) {
+        const b = stateBlock(chat[i]?.mes);
+        if (!b) continue;
+        return tagless(b).split('\n').map(l => notebookItem(l, names)).filter(Boolean);
+    }
+    return [];
 }
 
 // ---------------------------------------------------------------- step 1: the character's log
@@ -400,6 +425,8 @@ HOW TO WRITE A CHANGE
 - KNOWLEDGE lines use: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation."
 - RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's Now line says what the character does now.
 - Now and Wants lines say how things stand today. Don't chain dates ("since Day 6 …; since Day 7 …; since Day 8 …"): fold what still holds into the present wording, change what has ended, and leave the dated story to Shared history.
+- In the entry for ${u}, keep a Knows list of what this character has learned about ${u}: their past, family, habits, plans, and what ${u} told them about other people. One short item each, in the form the entry already uses, with who told them when it wasn't ${u}. Add what was learned in the days the log covers; remove an item only when the story has made it untrue.
+- NOTEBOOK lines (when given) are the game's record of what this character heard from ${u}, where ${u} stands with them, and what they told ${u}. The game deletes them once the card is updated, so each one the card doesn't hold yet becomes a change: what ${u} told them goes in the Knows list of their entry for ${u}; where ${u} stands with them goes in that entry's Now line; what they told ${u} goes in its Shared history, short.
 - If the log has something lasting between this character and a named person who has no entry yet (terms agreed, a relationship, a conflict that goes on), add an entry for them at the end of RELATIONSHIPS: their name in capitals as a heading line, then the field lines the other entries use (Now, Wants, Speech, Shared history), each short.
 - Dates: write the story's day and date in full, the way the chat headers do (for example "Day 3 - Monday 14 October"; see STORY DAYS). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead. Spoken lines in quotes keep their own words.
 - Keep the card's prose flat and plain: facts, behaviour, things said. No flourishes, no summing up, no interpretation. Write what the character does, never what they don't do.`;
@@ -431,7 +458,7 @@ You don't rewrite the card. You return a short list of changes to single lines. 
 ${updateRules(u)}
 
 WHAT TO RETURN
-First, what is true now, as of the newest date in the log: short lines of everything lasting that the card doesn't say yet or says differently. Where they live and with whom; who they are with and on what terms; what they are leaving or have left; rules or promises broken; goals reached, started or dropped; beliefs the story disproved; secrets now out; people who came into their life and terms agreed with them; how others now see them; how they now talk, cope or behave differently, and with whom.
+First, what is true now, as of the newest date in the log: short lines of everything lasting that the card doesn't say yet or says differently. Where they live and with whom; who they are with and on what terms; what they are leaving or have left; rules or promises broken; goals reached, started or dropped; beliefs the story disproved; secrets now out; people who came into their life and terms agreed with them; what they learned about ${u} or told ${u} (every NOTEBOOK line); how others now see them; how they now talk, cope or behave differently, and with whom.
 <now>
 - one fact per line
 </now>
@@ -451,13 +478,18 @@ export function sectionSpans(text, ranges) {
     });
 }
 
-export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0, days = '' }) {
+function notebookBlock(title, notebook) {
+    return `NOTEBOOK: WHAT ${title} HAS HEARD FROM THE PLAYER'S CHARACTER, WHERE THEY STAND, AND WHAT ${title} TOLD THEM (the game deletes these lines once this card is updated, so afterwards the card is the only record; put each one the card doesn't hold yet on it):\n<notebook>\n${notebook.join('\n')}\n</notebook>`;
+}
+
+export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0, days = '', notebook = [] }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
     parts.push(`SECTIONS YOU MAY UPDATE: ${sections.join(', ')}`);
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN (the current situation; use them for what they know and where things stand, never copy a passing mood into the card):\n<trackers>\n${trackers}\n</trackers>`);
+    if (notebook.length) parts.push(notebookBlock(title, notebook));
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
     if (days) parts.push(days);
     parts.push(`List what is true now for ${title}, then the changes to the card. Return only the <now> block, the <change> blocks (or <none/>), any <conflict> lines and the <storydate> line.`);
@@ -478,11 +510,12 @@ For each change the checker flagged, return one of these:
 ${CHANGE_FORMAT.replace(/<change type/g, '<change op="3" type')}
 - <drop op="3"><reason>why it goes</reason></drop> when the change shouldn't be made at all (it repeats the card, it isn't in the log, it is a passing state).
 - <keep op="3"><reason>why the checker is wrong, quoting the log</reason></keep> when the checker is wrong and the change is right as it is.
+For each notebook line the checker found missing: a change without op that puts it on the card, with missing set to its number (<change missing="1" type="add" after="80">): what ${u} told them in the Knows list of the entry for ${u}, where ${u} stands in its Now line, what they told ${u} in its Shared history.
 For each stale line the checker listed: a change without op that makes the line true again, with stale set to the line's number (<change stale="19" type="edit" line="19">), keeping every part of the line that still holds. Changes outside SECTIONS YOU MAY UPDATE are reviewed by hand. If the checker was wrong about the line, return nothing for it.
 Fix only what the checker found. The changes it didn't flag are kept as they are, so don't repeat them and don't add what they already add.`;
 }
 
-export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0, days = '' }) {
+export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0, days = '', missing = [] }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
@@ -496,7 +529,8 @@ export function fixUserPrompt({ card, title, sections, log, trackers, storyDate,
     for (const p of problems) found.push(`#${p.id} ${KIND_WORD[p.kind] || p.kind.toUpperCase()}: ${p.text}`);
     if (found.length) parts.push(`WHAT THE CHECKER FOUND IN YOUR CHANGES:\n${found.join('\n')}`);
     if (stale.length) parts.push(`STALE LINES THE CHECKER FOUND (the log shows they are no longer true):\n${stale.map(x => `line ${x.line} (${x.label}): ${x.text}`).join('\n')}`);
-    parts.push('Fix the flagged changes and the stale lines. Return only <change>, <drop> and <keep> blocks.');
+    if (missing.length) parts.push(`NOTEBOOK LINES THE CARD DOESN'T HOLD YET (the game deletes them after this update):\n${missing.map((m, k) => `${k + 1}. ${m}`).join('\n')}`);
+    parts.push('Fix the flagged changes, the stale lines and the missing notebook lines. Return only <change>, <drop> and <keep> blocks.');
     return parts.join('\n\n');
 }
 
@@ -589,7 +623,7 @@ ${CHECKS}
 
 HOW TO TIGHTEN
 - Remove a [new] line when the card already states the same fact somewhere else; leave a few words pointing to it only where the reader would otherwise miss it.
-- The entry for ${u} under RELATIONSHIPS is written in play, so all of it is marked [new]. Its Shared history keeps only the turning points: at most eight dated lines, each one or two sentences, cutting day-by-day detail. Its Now and Wants lines say how things stand today, without a chain of dates ("since Day 6 …; since Day 7 …").
+- The entry for ${u} under RELATIONSHIPS is written in play, so all of it is marked [new]. Its Shared history keeps only the turning points: at most eight dated lines, each one or two sentences, cutting day-by-day detail. Its Now and Wants lines say how things stand today, without a chain of dates ("since Day 6 …; since Day 7 …"). Its Knows list keeps every item that is still true: shorten items, never drop one, since the game keeps no other record of what was told.
 - Write dates in full, as listed under STORY DAYS.
 - Shorten [new] lines to one plain sentence. Keep dates and who was there.
 - Merge [new] lines that say the same thing.
@@ -1057,7 +1091,7 @@ export function parseOps(reply) {
         if (type === 'edit' && find === null && !textNew.trim()) type = 'remove';
         if (type === 'edit' && find !== null && !find) continue;
         if (type === 'add' && !textNew.trim()) continue;
-        ops.push({ type, line, find: type === 'edit' ? find : null, text: type === 'remove' ? '' : textNew, reason: (inner(body, 'reason') || '').trim(), ref: num(a.op), stale: num(a.stale) });
+        ops.push({ type, line, find: type === 'edit' ? find : null, text: type === 'remove' ? '' : textNew, reason: (inner(body, 'reason') || '').trim(), ref: num(a.op), stale: num(a.stale), missing: num(a.missing) });
     }
     const tagged = (tag) => [...text.matchAll(new RegExp(`<${tag}\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/${tag}>)`, 'gi'))]
         .map(m => ({ ref: num(attrs(m[1]).op), reason: ((m[2] && inner(m[2], 'reason')) ?? m[2] ?? '').trim() }))
@@ -1341,19 +1375,23 @@ Compare each change with the log and with the rest of the card:
 ${stale ? `
 Then read every line of the card, in every section, against the log and list the lines the log shows are no longer true and that none of the changes fix: where they live and with whom, what they are leaving, a rule already broken, a belief the story disproved, a goal finished or dropped, wanting to keep something they are leaving, a fear of losing what they already gave up, a trait or habit they have now acted against for good. Only lines the log clearly contradicts.
 ` : ''}
+${stale ? `If NOTEBOOK LINES are given, check each one: if the card, with the changes, doesn't hold what it says (in the Knows list, the Now line or the Shared history of the entry for ${u}), report it.
+` : ''}
 Quote words exactly. One tag per problem:
 <problem change="3" kind="lost">the words, then -> what is wrong</problem>${stale ? `
-<stale line="19">the words that are no longer true -> what the log shows now, with the date</stale>` : ''}
+<stale line="19">the words that are no longer true -> what the log shows now, with the date</stale>
+<missing>the notebook line, as it reads</missing>` : ''}
 kind is one of: lost, unsupported, wrong, twice, passing.
 If there are no problems${stale ? ' and no stale lines' : ''}, reply with exactly: <ok/>`;
 }
 
-export function opsCheckUserPrompt({ card, title, ops, log, trackers = '', only = null }) {
+export function opsCheckUserPrompt({ card, title, ops, log, trackers = '', only = null, notebook = [] }) {
     const ids = only ? only.map(o => `#${o.id}`) : [];
     return [
         `CHARACTER CARD AS IT IS NOW: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`,
         `WHAT HAPPENED (the log the changes were written from, oldest first):\n<log>\n${(log || []).join('\n')}\n</log>`,
         ...(trackers ? [`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`] : []),
+        ...(notebook.length && !only ? [`NOTEBOOK LINES (the card, with the changes, must hold every one; the game deletes them after this update):\n<notebook>\n${notebook.join('\n')}\n</notebook>`] : []),
         `PROPOSED CHANGES:\n${ops.map(describeOp).join('\n\n')}`,
         only ? `Check only ${ids.length === 1 ? `change ${ids[0]}` : `changes ${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]}`}; the others are listed so you can see what else the card gets. Report every problem in ${ids.length === 1 ? 'it' : 'them'}, or <ok/>.` : 'Report every problem, or <ok/>.',
     ].join('\n\n');
@@ -1375,8 +1413,9 @@ export function parseOpsCheck(reply) {
         const t = m[2].trim();
         if (line !== null && t) stale.push({ line, text: t });
     }
-    if (!problems.length && !stale.length && !/<ok\s*\/?>/i.test(text)) return null;
-    return { problems, stale };
+    const missing = [...text.matchAll(/<missing\b[^>]*>([\s\S]*?)<\/missing>/gi)].map(m => m[1].trim()).filter(Boolean);
+    if (!problems.length && !stale.length && !missing.length && !/<ok\s*\/?>/i.test(text)) return null;
+    return { problems, stale, missing };
 }
 
 // ---------------------------------------------------------------- warnings for one change

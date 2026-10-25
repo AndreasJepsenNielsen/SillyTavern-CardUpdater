@@ -89,6 +89,20 @@ every logged line, also the ones already marked as done, without reading the sto
 Where the chat has been summarised, the first run uses the Summaryception summary; later runs read the messages
 themselves (also the hidden ones) or the summary pieces that cover them.
 
+## The GM's Notebook
+
+If the latest reply has a notebook in its state block, the rows about what the character **has heard from** your
+persona, **has heard where** your persona stands, and **told** your persona go to the update as their own list (not as
+background tracker rows), because a chat preset may delete them once the card says it was updated past them. After
+that, the card is the only record. The update puts each one the card doesn't hold yet into the character's entry for
+your persona: what you told them in its **Knows** list, where you stand in its **Now** line, what they told you in its
+Shared history. The check lists any notebook row the card still doesn't hold, the fix step adds it, and while one is
+still missing (or the check didn't run) the CANON POINT stamp comes unticked, so the preset doesn't delete it.
+
+The entry for your persona keeps a **Knows** list of what the character has learned about you: your past, family,
+habits, plans and what you told them about others, one short item each, with who told them when it wasn't you.
+Items are only removed when the story has made them untrue, and Tighten shortens them but never drops one.
+
 ## What it writes
 
 - Only lasting changes: relationships, where they live and work, what they now know, secrets that came out,
