@@ -185,7 +185,8 @@ test('chunks stay under the size and remember the last message they cover', () =
 
 test('tracker rows about the character, with their section', () => {
     const t = U.trackerLines(CHAT, ['Rue']);
-    assert.ok(t.includes('📓 GM NOTEBOOK: 1. [R] Rue knows Leon paints.'));
+    assert.ok(!t.includes('[R] Rue knows Leon paints.'), '[R] rows naming her go to the notebook block instead');
+    assert.deepEqual(U.notebookLines(CHAT, ['Rue']), ['[R] Rue knows Leon paints.']);
     assert.ok(t.includes('💞 BONDS: - Rue | BOND 3'));
     assert.ok(!t.includes('Nate meets Cal'));
 });
@@ -944,28 +945,30 @@ const NOTEBOOK_CHAT = [
     { is_user: true, mes: 'My turn, no notebook.' },
 ];
 
-test('0.8: notebook rows on what the character heard and told are read from the newest notebook', () => {
+test('0.8: notebook rows naming the character are read from the newest notebook', () => {
     assert.deepEqual(U.notebookLines(NOTEBOOK_CHAT, ['Jules', 'Jules Vaughn']), [
         '[R] Jules has heard from Leon: his mother killed herself.',
         '[R] Jules has heard where Leon stands: he wants her to move in for good.',
         '[R] Jules told Leon: she finishes maybe once a month.',
+        '[R] Jules knows the desk man talks.',
         '[R] [Jules] told [Leon]: she tells Ellis on Tuesday.',
     ]);
     assert.deepEqual(U.notebookLines([{ mes: 'no block' }], ['Jules']), []);
     const t = U.trackerLines(NOTEBOOK_CHAT, ['Jules']);
-    assert.ok(t.includes('[R] Jules knows the desk man talks.') && !t.includes('has heard from') && !t.includes('told Leon'), 'tracker rows leave them out; they get their own block');
+    assert.ok(!t.includes('has heard from') && !t.includes('told Leon') && !t.includes('desk man'), 'tracker rows leave them out; they get their own block');
 });
 
 test('0.8: the update must put every notebook line on the card; the check reports the ones it did not', () => {
     const nb = U.notebookLines(NOTEBOOK_CHAT, ['Jules']);
     const up = U.userPrompt({ card: 'C', title: 'Jules', sections: ['RELATIONSHIPS (lines 1-9)'], log: [], notebook: nb });
-    assert.ok(up.includes("NOTEBOOK: WHAT Jules HAS HEARD FROM THE PLAYER'S CHARACTER") && up.includes('<notebook>\n[R] Jules has heard from Leon: his mother killed herself.'));
+    assert.ok(up.includes("NOTEBOOK: THE GAME'S RECORD OF WHAT PEOPLE SAW, HEARD, FOUND OUT, KNOW AND TOLD, LINES NAMING Jules (the game deletes these lines") && up.includes('<notebook>\n[R] Jules has heard from Leon: his mother killed herself.'));
     assert.ok(!U.userPrompt({ card: 'C', title: 'Jules', sections: [], log: [] }).includes('NOTEBOOK'), 'no block without notebook lines');
     const sys = U.systemPrompt('Leon');
     assert.ok(sys.includes('keep a Knows list of what this character has learned about Leon') && sys.includes('NOTEBOOK lines (when given)') && sys.includes('what they learned about Leon or told Leon (every NOTEBOOK line)'));
     const chk = U.opsCheckUserPrompt({ card: 'C', title: 'Jules', ops: [], log: [], notebook: nb });
-    assert.ok(chk.includes('NOTEBOOK LINES (the card, with the changes, must hold every one'));
-    assert.ok(!U.opsCheckUserPrompt({ card: 'C', title: 'Jules', ops: [], log: [], notebook: nb, only: [] }).includes('NOTEBOOK LINES'), 'the re-check of fixes does not get them');
+    assert.ok(chk.includes('must be on the card'));
+    const re = U.opsCheckUserPrompt({ card: 'C', title: 'Jules', ops: [], log: [], notebook: nb, only: [] });
+    assert.ok(re.includes('(a source, like the log)') && re.includes('[R] Jules told Leon'), 'the re-check of fixes gets them as a source');
     assert.ok(U.opsCheckSystemPrompt('Leon').includes('<missing>the notebook line, as it reads</missing>'));
     assert.deepEqual(U.parseOpsCheck('<missing>[R] Jules told Leon: she finishes maybe once a month.</missing>').missing, ['[R] Jules told Leon: she finishes maybe once a month.']);
     const fx = U.fixUserPrompt({ card: 'C', title: 'J', sections: [], log: [], ops: [], problems: [], stale: [], missing: ['[R] Jules told Leon: x.'] });
@@ -978,4 +981,41 @@ test('0.8: the update must put every notebook line on the card; the check report
 test('0.8: the canon point keeps one form', () => {
     assert.equal(U.canonPointBody('Portrayed after the slap. Nothing after this has happened.', 'Day 11 - Tuesday 27 May'), 'Portrayed after the slap, updated with the story up to Day 11 - Tuesday 27 May. Nothing after this has happened.');
     assert.equal(U.canonPointBody('Portrayed after the slap, updated with the story up to Day 9 - Sunday 25 May. Nothing after.', 'Day 11 - Tuesday 27 May'), 'Portrayed after the slap, updated with the story up to Day 11 - Tuesday 27 May. Nothing after.');
+});
+
+// ---------------------------------------------------------------- 0.8.1
+
+test('0.8.1: every [R] row naming the character is read; [T] rows and rows marked Untrue stay tracker rows', () => {
+    const chat = [{ mes: '<internal_states><details><summary>📓 GM\'S NOTEBOOK</summary>\n1. [R] Dez saw on the thread on Day 10 that it has Jules Vaughn\'s full name; she has told no one.\n2. [R] Leon told Jules that Dez texts too much.\n3. [T] Dez thinks Leon will leave.\n4. [R] Dez believes Jules is Leon\'s cousin. Untrue.\n5. [R] Bree told Nate about the party.\n</details></internal_states>' }];
+    assert.deepEqual(U.notebookLines(chat, ['Dez']), [
+        "[R] Dez saw on the thread on Day 10 that it has Jules Vaughn's full name; she has told no one.",
+        '[R] Leon told Jules that Dez texts too much.',
+    ], 'the model decides whether she is in it or only talked about');
+    const t = U.trackerLines(chat, ['Dez']);
+    assert.ok(t.includes('[T] Dez thinks Leon will leave.') && t.includes('Untrue') && !t.includes('full name'));
+});
+
+test('0.8.1: the notebook rules: knowledge, secrets with who knows, what they told; only lines they are in', () => {
+    const sys = U.systemPrompt('Leon');
+    for (const part of ['names this character as telling, being told, seeing, overhearing, finding out or knowing something', 'anything else they found out or were told: KNOWLEDGE, or the entry for the person it is about', 'a secret: SECRETS, saying who knows it and who it is kept from', 'only mentions this character as what other people talk about']) assert.ok(sys.includes(part), part);
+    const chk = U.opsCheckSystemPrompt('Leon');
+    assert.ok(chk.includes('neither the log, the NOTEBOOK lines, the tracker rows nor the card') && chk.includes('The NOTEBOOK is a source just like the log'));
+    assert.ok(U.opsCheckSystemPrompt('Leon', { stale: false }).includes('The NOTEBOOK is a source just like the log'), 'also when checking the fixes');
+    const nb = ['[R] Dez saw x.'];
+    assert.ok(U.fixUserPrompt({ card: 'C', title: 'Dez', sections: [], log: [], ops: [], problems: [], stale: [], notebook: nb }).includes('<notebook>\n[R] Dez saw x.'));
+    assert.ok(U.sweepUserPrompt({ card: 'C', title: 'Dez', sections: [], now: [], log: [], ops: [], notebook: nb }).includes('(a source, like the log)'));
+});
+
+test('0.8.1: a card without CANON POINT gets one before its first section', () => {
+    const card = 'DEZ — Supporting\n\nTHIS CHARACTER IS AN ADULT\n\nIDENTITY\n- 22.\n\nHISTORY\n- x';
+    const op = U.canonOp(card, 'Day 12 - Thursday 29 May');
+    assert.equal(U.applyOps(card, [op]), 'DEZ — Supporting\n\nTHIS CHARACTER IS AN ADULT\n\nCANON POINT\nCard updated with the story up to Day 12 - Thursday 29 May.\n\nIDENTITY\n- 22.\n\nHISTORY\n- x');
+    assert.match(op.reason, /had no CANON POINT/);
+    assert.equal(U.applyOps('IDENTITY\n- 22.', [U.canonOp('IDENTITY\n- 22.', 'Day 12 - Thursday 29 May')]), 'CANON POINT\nCard updated with the story up to Day 12 - Thursday 29 May.\n\nIDENTITY\n- 22.');
+    const stamped = U.applyOps(card, [op]);
+    assert.equal(U.canonOp(stamped, 'Day 12 - Thursday 29 May'), null, 'nothing to do once stamped');
+    assert.equal(U.canonOp(stamped, 'Day 13 - Friday 30 May').result[0], 'Card updated with the story up to Day 13 - Friday 30 May.', 'the next update moves the date');
+    const existing = U.canonOp('CANON POINT\nPortrayed after the slap. Nothing after.\n\nIDENTITY\n- x', 'Day 12 - Thursday 29 May');
+    assert.equal(existing.type, 'edit');
+    assert.equal(existing.result[0], 'Portrayed after the slap, updated with the story up to Day 12 - Thursday 29 May. Nothing after.');
 });

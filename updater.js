@@ -107,10 +107,40 @@ export function canonPointBody(body, storyDate) {
     const b = String(body ?? '').trim();
     if (!b || !storyDate) return b;
     const date = String(storyDate).trim().replace(/\.$/, '');
-    if (CANON_UPDATED_RE.test(b)) return b.replace(CANON_UPDATED_RE, `, updated with the story up to ${date}.`);
+    if (CANON_UPDATED_RE.test(b)) {
+        return b.replace(CANON_UPDATED_RE, (m, at) => `${at === 0 ? '' : m.trimStart().startsWith(',') ? ', ' : ' '}updated with the story up to ${date}.`);
+    }
     const m = b.match(/^([^.]*?)(\.)(\s|$)/);
     if (!m) return `${b} Updated with the story up to ${date}.`;
     return `${m[1]}, updated with the story up to ${date}.${b.slice(m[0].length - m[3].length)}`;
+}
+
+/**
+ * The change that stamps the card as updated to a story date: the CANON POINT line gets "updated with the story up
+ * to …"; a card without the section gets one, before its first section.
+ * @returns {object|null} a resolved op (id 'canon'), or null when there's nothing to change
+ */
+export function canonOp(content, storyDate) {
+    if (!storyDate) return null;
+    const lines = String(content ?? '').split(/\r?\n/);
+    const all = sectionRanges(content);
+    const canon = all.find(r => r.kind === 'canon' && !r.inline);
+    const date = String(storyDate).trim().replace(/\.$/, '');
+    const base = { id: 'canon', kind: 'canon', label: 'CANON POINT', find: null, reason: `Marks the card as updated to ${date}.` };
+    if (canon) {
+        let i = canon.start + 1;
+        while (i < canon.end && !lines[i].trim()) i++;
+        if (i >= canon.end) return { ...base, type: 'add', index: canon.start, line: canon.start + 1, oldLine: lines[canon.start], result: [`Card updated with the story up to ${date}.`] };
+        const next = canonPointBody(lines[i], date);
+        if (next === lines[i].trim()) return null;
+        return { ...base, type: 'edit', index: i, line: i + 1, oldLine: lines[i], result: [lines[i].match(/^\s*/)[0] + next] };
+    }
+    const first = all.find(r => r.kind !== 'preamble');
+    if (!first) return null;
+    const body = ['CANON POINT', `Card updated with the story up to ${date}.`, ''];
+    if (first.start === 0) return { ...base, type: 'edit', index: 0, line: 1, oldLine: lines[0], result: [...body, lines[0]], reason: `The card had no CANON POINT; adds one marking it as updated to ${date}.` };
+    const at = first.start - 1;
+    return { ...base, type: 'add', index: at, line: at + 1, oldLine: lines[at], result: lines[at].trim() ? ['', ...body] : body, reason: `The card had no CANON POINT; adds one marking it as updated to ${date}.` };
 }
 
 // ---------------------------------------------------------------- the story
@@ -250,20 +280,23 @@ export function trackerLines(chat, names) {
     return '';
 }
 
-const NOTEBOOK_RE = /^(?:[-*•]\s*|\d+[.)]\s*)?\[R\]\s*(.{1,80}?)\s+(has heard from|has heard where|told)\b/i;
+const NOTEBOOK_RE = /^(?:[-*•]\s*|\d+[.)]\s*)?\[R\]/i;
 
-/** The notebook line as it reads, if it is one of the character's "has heard from / has heard where / told" rows. */
+/**
+ * The notebook line as it reads, if it is an [R] row that names the character. [T] rows and rows marked Untrue stay
+ * in the notebook whatever the cards say, so they stay tracker rows.
+ */
 function notebookItem(line, names) {
     const t = String(line ?? '').trim();
-    const m = t.match(NOTEBOOK_RE);
-    if (!m || !mentionsAny(m[1].replace(/[[\]]/g, ''), names)) return null;
+    if (!NOTEBOOK_RE.test(t) || /\buntrue\b/i.test(t)) return null;
+    if (!mentionsAny(t.replace(/[[\]]/g, ' '), names)) return null;
     return t.replace(/^(?:[-*•]\s*|\d+[.)]\s*)/, '');
 }
 
 /**
- * The GM's Notebook rows about what the character heard from the player's character, where the player's character
- * stands with them, and what they told the player's character, from the newest message that has a notebook. The chat
- * preset deletes these rows once the card says it was updated past them, so the card has to hold them first.
+ * The GM's Notebook [R] rows that name the character, from the newest message that has a notebook: what they saw,
+ * heard, found out, know or told. The chat preset deletes these rows once every card they name is stamped past their
+ * day, so the card has to hold them first.
  */
 export function notebookLines(chat, names) {
     for (let i = (chat?.length || 0) - 1; i >= 0; i--) {
@@ -426,7 +459,12 @@ HOW TO WRITE A CHANGE
 - RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's Now line says what the character does now.
 - Now and Wants lines say how things stand today. Don't chain dates ("since Day 6 …; since Day 7 …; since Day 8 …"): fold what still holds into the present wording, change what has ended, and leave the dated story to Shared history.
 - In the entry for ${u}, keep a Knows list of what this character has learned about ${u}: their past, family, habits, plans, and what ${u} told them about other people. One short item each, in the form the entry already uses, with who told them when it wasn't ${u}. Add what was learned in the days the log covers; remove an item only when the story has made it untrue.
-- NOTEBOOK lines (when given) are the game's record of what this character heard from ${u}, where ${u} stands with them, and what they told ${u}. The game deletes them once the card is updated, so each one the card doesn't hold yet becomes a change: what ${u} told them goes in the Knows list of their entry for ${u}; where ${u} stands with them goes in that entry's Now line; what they told ${u} goes in its Shared history, short.
+- NOTEBOOK lines (when given) are the game's record of what people saw, heard, found out, know and told. The game deletes them once the card is updated, so every line that names this character as telling, being told, seeing, overhearing, finding out or knowing something, and that the card doesn't hold yet, becomes a change:
+  - what ${u} told them: the Knows list of their entry for ${u}; where ${u} stands with them: that entry's Now line;
+  - what they told ${u}: that entry's Shared history, short;
+  - anything else they found out or were told: KNOWLEDGE, or the entry for the person it is about;
+  - a secret: SECRETS, saying who knows it and who it is kept from ("kept from the group chat", "she has told no one").
+  A line that only mentions this character as what other people talk about is not something they know; leave it.
 - If the log has something lasting between this character and a named person who has no entry yet (terms agreed, a relationship, a conflict that goes on), add an entry for them at the end of RELATIONSHIPS: their name in capitals as a heading line, then the field lines the other entries use (Now, Wants, Speech, Shared history), each short.
 - Dates: write the story's day and date in full, the way the chat headers do (for example "Day 3 - Monday 14 October"; see STORY DAYS). Never use words that count from a day: today, tonight, this morning, yesterday, last night, tomorrow, this week, "three days ago", or running counts like "four days clean". Give a count the date it started instead. Spoken lines in quotes keep their own words.
 - Keep the card's prose flat and plain: facts, behaviour, things said. No flourishes, no summing up, no interpretation. Write what the character does, never what they don't do.`;
@@ -478,8 +516,11 @@ export function sectionSpans(text, ranges) {
     });
 }
 
-function notebookBlock(title, notebook) {
-    return `NOTEBOOK: WHAT ${title} HAS HEARD FROM THE PLAYER'S CHARACTER, WHERE THEY STAND, AND WHAT ${title} TOLD THEM (the game deletes these lines once this card is updated, so afterwards the card is the only record; put each one the card doesn't hold yet on it):\n<notebook>\n${notebook.join('\n')}\n</notebook>`;
+function notebookBlock(title, notebook, { must = true } = {}) {
+    const what = must
+        ? `the game deletes these lines once this card is updated, so afterwards the card is the only record; every line where ${title} tells, is told, sees, overhears, finds out or knows something must be on the card`
+        : 'a source, like the log';
+    return `NOTEBOOK: THE GAME'S RECORD OF WHAT PEOPLE SAW, HEARD, FOUND OUT, KNOW AND TOLD, LINES NAMING ${title} (${what}):\n<notebook>\n${notebook.join('\n')}\n</notebook>`;
 }
 
 export function userPrompt({ card, title, sections, log, trackers, storyDate, tokens = 0, limit = 0, days = '', notebook = [] }) {
@@ -510,18 +551,19 @@ For each change the checker flagged, return one of these:
 ${CHANGE_FORMAT.replace(/<change type/g, '<change op="3" type')}
 - <drop op="3"><reason>why it goes</reason></drop> when the change shouldn't be made at all (it repeats the card, it isn't in the log, it is a passing state).
 - <keep op="3"><reason>why the checker is wrong, quoting the log</reason></keep> when the checker is wrong and the change is right as it is.
-For each notebook line the checker found missing: a change without op that puts it on the card, with missing set to its number (<change missing="1" type="add" after="80">): what ${u} told them in the Knows list of the entry for ${u}, where ${u} stands in its Now line, what they told ${u} in its Shared history.
+For each notebook line the checker found missing: a change without op that puts it on the card, with missing set to its number (<change missing="1" type="add" after="80">), in the place the NOTEBOOK rule above gives it.
 For each stale line the checker listed: a change without op that makes the line true again, with stale set to the line's number (<change stale="19" type="edit" line="19">), keeping every part of the line that still holds. Changes outside SECTIONS YOU MAY UPDATE are reviewed by hand. If the checker was wrong about the line, return nothing for it.
 Fix only what the checker found. The changes it didn't flag are kept as they are, so don't repeat them and don't add what they already add.`;
 }
 
-export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0, days = '', missing = [] }) {
+export function fixUserPrompt({ card, title, sections, log, trackers, storyDate, ops, problems, stale, tokens = 0, limit = 0, days = '', missing = [], notebook = [] }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
     parts.push(`SECTIONS YOU MAY UPDATE: ${sections.join(', ')}`);
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`);
+    if (notebook.length) parts.push(notebookBlock(title, notebook));
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
     if (days) parts.push(days);
     parts.push(`YOUR CHANGES:\n${ops.map(describeOp).join('\n\n')}`);
@@ -884,7 +926,7 @@ ${CHANGE_FORMAT}
 In the reason, quote the line of WHAT IS TRUE NOW or the log that the old line contradicts. If every line is still true, return only <none/>.`;
 }
 
-export function sweepUserPrompt({ card, title, sections, now, log, trackers, storyDate, ops, tokens = 0, limit = 0, days = '' }) {
+export function sweepUserPrompt({ card, title, sections, now, log, trackers, storyDate, ops, tokens = 0, limit = 0, days = '', notebook = [] }) {
     const parts = [];
     parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
     if (tokens) parts.push(sizeNote(tokens, limit));
@@ -892,6 +934,7 @@ export function sweepUserPrompt({ card, title, sections, now, log, trackers, sto
     parts.push(`WHAT IS TRUE NOW:\n<now>\n${(now || []).join('\n') || '(not listed; use the log)'}\n</now>`);
     parts.push(`WHAT HAPPENED TO ${title} SINCE THE CARD WAS LAST UPDATED (oldest first):\n<log>\n${log.join('\n')}\n</log>`);
     if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`);
+    if (notebook.length) parts.push(notebookBlock(title, notebook, { must: false }));
     if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
     if (days) parts.push(days);
     parts.push(`CHANGES ALREADY PLANNED:\n${ops.length ? ops.map(describeOp).join('\n\n') : '(none)'}`);
@@ -1364,18 +1407,18 @@ const KIND_ALIASES = { lost: 'lost', missing: 'lost', dropped: 'lost', unsupport
 
 export function opsCheckSystemPrompt(userName, { stale = true } = {}) {
     const u = userName || 'the player character';
-    return `You check proposed changes to a character card for a long-running roleplay. You don't write changes; you only report problems. You get the card with numbered lines, the log of what happened that the changes were written from (and the game's tracker rows, if any), and the list of changes.
+    return `You check proposed changes to a character card for a long-running roleplay. You don't write changes; you only report problems. You get the card with numbered lines, the log of what happened that the changes were written from (and the game's NOTEBOOK lines and tracker rows, if any), and the list of changes. The NOTEBOOK is a source just like the log: a change that puts a notebook line on the card, also an older one the log doesn't cover, is supported.
 
 Compare each change with the log and with the rest of the card:
 - LOST: an edit or removal drops a fact from the old line while the log doesn't show that fact stopped being true, and the card doesn't state it anywhere else. A want, like or piece of knowledge replaced by a newer one is lost unless the log shows the old one ended.
-- UNSUPPORTED: the new text states something neither the log, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early). Also any detail of how ${u} looks or what they wear or carry.
+- UNSUPPORTED: the new text states something neither the log, the NOTEBOOK lines, the tracker rows nor the card says: a cause, reason, motive, feeling or detail that was added (why someone came, what they had just done, that something was unannounced or early). Also any detail of how ${u} looks or what they wear or carry.
 - WRONG: the new text contradicts the log or another line of the card: who did what to whom, which act, the order of events, a date, who was there, a name mixed up, or a fact the card states differently elsewhere. Read each change's whole new line (NEW or NEW LINE), not only the replaced words: a clause the change left in place that the log shows is no longer true is WRONG. Two changes that state facts that disagree with each other (one says she left her key behind, another that he set her key on the counter) are WRONG: report it on each of them, saying which the log supports. Also wrong: a line that now says two things that can't both be true (an old part the new fact ends: moving out ends wanting to keep the place; "not the one I'm waiting for" ends wanting someone back; breaking a rule ends keeping it); a secret marked as told or found out when the log shows only something like it happening (crying in front of someone does not tell them about an earlier time she cried); a change to who a secret is hidden from that the person's own Hides line contradicts; something this character told someone written as what they know.
 - TWICE: the new text repeats something the card already says on another line, the same fact told the same way (give that line's number), or another change already adds it. Anything involving ${u} belongs only in the entry for ${u} under RELATIONSHIPS, never in HISTORY or KNOWLEDGE. Not a repeat: the same event in two people's entries when each says what it meant between those two, or a SECRETS line and a Hides line naming the same secret.
 - PASSING: the new text writes a passing state into the card: a mood, where someone is right now, what they are doing that day.
 ${stale ? `
 Then read every line of the card, in every section, against the log and list the lines the log shows are no longer true and that none of the changes fix: where they live and with whom, what they are leaving, a rule already broken, a belief the story disproved, a goal finished or dropped, wanting to keep something they are leaving, a fear of losing what they already gave up, a trait or habit they have now acted against for good. Only lines the log clearly contradicts.
 ` : ''}
-${stale ? `If NOTEBOOK LINES are given, check each one: if the card, with the changes, doesn't hold what it says (in the Knows list, the Now line or the Shared history of the entry for ${u}), report it.
+${stale ? `If NOTEBOOK lines are given, check each line that names this character as telling, being told, seeing, overhearing, finding out or knowing something: if the card, with the changes, doesn't hold what it says (in KNOWLEDGE, SECRETS, or the entry for the person it is about; what ${u} told them in the Knows list of the entry for ${u}), report it. A line that only mentions this character as what others talk about is not theirs to hold.
 ` : ''}
 Quote words exactly. One tag per problem:
 <problem change="3" kind="lost">the words, then -> what is wrong</problem>${stale ? `
@@ -1391,7 +1434,7 @@ export function opsCheckUserPrompt({ card, title, ops, log, trackers = '', only 
         `CHARACTER CARD AS IT IS NOW: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`,
         `WHAT HAPPENED (the log the changes were written from, oldest first):\n<log>\n${(log || []).join('\n')}\n</log>`,
         ...(trackers ? [`THE GAME'S TRACKER ROWS ABOUT ${title} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`] : []),
-        ...(notebook.length && !only ? [`NOTEBOOK LINES (the card, with the changes, must hold every one; the game deletes them after this update):\n<notebook>\n${notebook.join('\n')}\n</notebook>`] : []),
+        ...(notebook.length ? [notebookBlock(title, notebook, { must: !only })] : []),
         `PROPOSED CHANGES:\n${ops.map(describeOp).join('\n\n')}`,
         only ? `Check only ${ids.length === 1 ? `change ${ids[0]}` : `changes ${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]}`}; the others are listed so you can see what else the card gets. Report every problem in ${ids.length === 1 ? 'it' : 'them'}, or <ok/>.` : 'Report every problem, or <ok/>.',
     ].join('\n\n');

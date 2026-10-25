@@ -11,11 +11,12 @@ import {
     numberCard, sectionSpans, parseOps, resolveOps, applyOps, normalizeLogLines, opsCheckSystemPrompt, opsCheckUserPrompt,
     parseOpsCheck, fixSystemPrompt, fixUserPrompt, opWarnings, opRepeats, wordDiff,
     storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines, dayLabelOps, notebookLines,
+    canonOp,
 } from './updater.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.8.0'; // keep in step with manifest.json
+const VERSION = '0.8.1'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -254,7 +255,7 @@ function planText(card, plan, relog = false) {
     if (relog && plan.log) parts.push(`updates from all ${plan.log.lines.length} logged lines`);
     else if (plan.pending) parts.push(`${plan.pending} logged line${plan.pending === 1 ? '' : 's'} not in the card yet`);
     if (plan.log) parts.push(`log has ${plan.log.lines.length} line${plan.log.lines.length === 1 ? '' : 's'}`);
-    if (plan.notebook) parts.push(`${plan.notebook} notebook line${plan.notebook === 1 ? '' : 's'} on what they heard and told`);
+    if (plan.notebook) parts.push(`${plan.notebook} notebook line${plan.notebook === 1 ? '' : 's'} about them`);
     return `${card.title}: ${parts.join(' · ')}`;
 }
 
@@ -557,7 +558,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
             const sweepReply = await sendWithRetry(s, sweepSystemPrompt(c.name1), sweepUserPrompt({
                 card: job.numbered, title: card.title, sections: job.sections, now: parsed.now, log: job.log,
                 trackers: job.trackers, storyDate: job.storyDate, ops: ops.filter(o => !o.invalid),
-                tokens: job.tokens, limit: job.limit, days: job.days,
+                tokens: job.tokens, limit: job.limit, days: job.days, notebook: job.notebook,
             }), {
                 signal,
                 reasoning: s.updateThinking,
@@ -669,7 +670,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
             card: job.numbered, title, sections: job.sections, log: job.log, trackers: job.trackers, storyDate: job.storyDate,
             ops: [...live, ...broken].sort((a, b) => a.id - b.id),
             problems: flagged.flatMap(op => [...(op.found || []).map(f => ({ id: op.id, ...f })), ...(op.codeProblems || []).map(t => ({ id: op.id, kind: 'rule', text: t }))]),
-            stale: fixable, missing: out.missing,
+            stale: fixable, missing: out.missing, notebook: job.notebook,
             tokens: job.tokens, limit: job.limit, days: job.days,
         }), { signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('fixing what the check found') });
         out.raws.push(['Fix reply', fixReply]);
@@ -735,7 +736,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     say('checking the fixes');
     try {
         const reply = await sendWithRetry(s, opsCheckSystemPrompt(c.name1, { stale: false }), opsCheckUserPrompt({
-            card: job.numbered, title, ops: ops.filter(o => !o.invalid), log: job.log, trackers: job.trackers, only: recheck,
+            card: job.numbered, title, ops: ops.filter(o => !o.invalid), log: job.log, trackers: job.trackers, notebook: job.notebook, only: recheck,
         }), { signal, reasoning: s.checkThinking, onProgress: progress('checking the fixes') });
         out.raws.push(['Check reply for the fixes', reply]);
         const again = parseOpsCheck(reply);
@@ -814,23 +815,15 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
     });
     items.sort((a, b) => (a.op.index ?? 1e9) - (b.op.index ?? 1e9) || (a.op.type === 'add') - (b.op.type === 'add') || a.op.id - b.op.id);
 
-    // The canon point says how far the card has been updated.
-    const canon = sectionRanges(content).find(r => r.kind === 'canon' && !r.inline);
-    const lines = content.split(/\r?\n/);
-    if (canon && job.storyDate) {
-        let i = canon.start + 1;
-        while (i < canon.end && !lines[i].trim()) i++;
-        if (i < canon.end) {
-            const next = canonPointBody(lines[i], job.storyDate);
-            if (next !== lines[i].trim() && !result.ops.some(o => !o.invalid && o.type !== 'add' && o.index === i)) {
-                // The chat preset deletes its notebook lines once the card is stamped: only stamp when they are all on the card.
-                const unsure = job.notebook.length && (!result.check.ran || result.check.failed || result.missingLeft.length);
-                const canonWarn = !unsure ? [] : [result.missingLeft.length
-                    ? 'Some notebook lines aren\'t on the card yet (listed at the top). Stamping now lets the chat preset delete them.'
-                    : 'The check didn\'t run, so it isn\'t known whether every notebook line is on the card. Stamping lets the chat preset delete them.'];
-                items.push({ op: { id: 'canon', type: 'edit', kind: 'canon', label: canon.title, index: i, line: i + 1, oldLine: lines[i], result: [lines[i].match(/^\s*/)[0] + next], reason: `Marks the card as updated to ${job.storyDate}.`, find: null }, baseWarnings: canonWarn, accept: !unsure });
-            }
-        }
+    // The canon point says how far the card has been updated; a card without one gets one.
+    const stamp = canonOp(content, job.storyDate);
+    if (stamp && !(stamp.type === 'edit' && result.ops.some(o => !o.invalid && o.type !== 'add' && o.index === stamp.index))) {
+        // The chat preset deletes its notebook lines once the card is stamped: only stamp when they are all on the card.
+        const unsure = job.notebook.length && (!result.check.ran || result.check.failed || result.missingLeft.length);
+        const canonWarn = !unsure ? [] : [result.missingLeft.length
+            ? 'Some notebook lines aren\'t on the card yet (listed at the top). Stamping now lets the chat preset delete them.'
+            : 'The check didn\'t run, so it isn\'t known whether every notebook line is on the card. Stamping lets the chat preset delete them.'];
+        items.push({ op: stamp, baseWarnings: canonWarn, accept: !unsure });
     }
 
     const stale = result.stale.filter(x => !x.fixedBy);

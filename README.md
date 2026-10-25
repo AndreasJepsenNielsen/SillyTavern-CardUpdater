@@ -91,13 +91,21 @@ themselves (also the hidden ones) or the summary pieces that cover them.
 
 ## The GM's Notebook
 
-If the latest reply has a notebook in its state block, the rows about what the character **has heard from** your
-persona, **has heard where** your persona stands, and **told** your persona go to the update as their own list (not as
-background tracker rows), because a chat preset may delete them once the card says it was updated past them. After
-that, the card is the only record. The update puts each one the card doesn't hold yet into the character's entry for
-your persona: what you told them in its **Knows** list, where you stand in its **Now** line, what they told you in its
-Shared history. The check lists any notebook row the card still doesn't hold, the fix step adds it, and while one is
-still missing (or the check didn't run) the CANON POINT stamp comes unticked, so the preset doesn't delete it.
+If the latest reply has a notebook in its state block, every **[R]** row that names the character goes to the update
+as its own list (not as background tracker rows), because a chat preset may delete those rows once the cards they
+name are stamped past their day. After that, the card is the only record. [T] rows and rows marked Untrue stay
+tracker rows.
+
+Each row where the character tells, is told, sees, overhears, finds out or knows something, and that the card doesn't
+hold yet, becomes a change: what your persona told them in the **Knows** list of their entry for you, where you stand
+in its **Now** line, what they told you in its Shared history, anything else they learned in KNOWLEDGE or the entry for
+the person it's about, and a secret in SECRETS with who knows it and who it's kept from ("she has told no one"). A row
+that only mentions the character as what others talk about is left alone.
+
+The notebook counts as a source in every step, like the log, so a change taken from it is never marked "not in the
+log". The check lists any row the card still doesn't hold, the fix step adds it, and while one is still missing (or
+the check didn't run) the CANON POINT stamp comes unticked, so the preset doesn't delete it. A card without a CANON
+POINT section gets one, before its first section, with the "updated with the story up to …" line.
 
 The entry for your persona keeps a **Knows** list of what the character has learned about you: your past, family,
 habits, plans and what you told them about others, one short item each, with who told them when it wasn't you.
