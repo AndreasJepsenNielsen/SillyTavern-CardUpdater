@@ -1019,3 +1019,62 @@ test('0.8.1: a card without CANON POINT gets one before its first section', () =
     assert.equal(existing.type, 'edit');
     assert.equal(existing.result[0], 'Portrayed after the slap, updated with the story up to Day 12 - Thursday 29 May. Nothing after.');
 });
+
+// ---------------------------------------------------------------- 0.9.0: new cards
+
+const STORY = [
+    { mes: '[ 🗓️ Day 7 - Friday 23 May ]\n[Simon] (Smug, Relaxed): <gold:"measured">"The museum gets nothing until you say so."</gold>\n[Jules] (Tired): "Go."\n<internal_states><details><summary>NPC AGENDAS</summary>\n- <b>Ellis</b> | Agenda: drive home.\n</details></internal_states>' },
+    { is_user: true, mes: '[Leon] (Calm): "Hi."' },
+    { mes: '[ 🗓️ Day 8 - Saturday 24 May ]\n[Simon Aldridge] (Cornered):\n"I only came for the paintings."\n[Narrator] (Quiet): The hall empties.\n[Desk Man] (Bored): "Sign here."' },
+    { mes: '[Simon] (Smug, Relaxed): <gold:"measured">"The museum gets nothing until you say so."</gold>' },
+];
+
+test('0.9: people who speak on screen or have an agenda row, without a card, are found and grouped', () => {
+    const found = U.uncardedPeople(STORY, { known: ['Jules', 'Jules Vaughn'], persona: ['Leon Kennedy', 'Leon'] });
+    assert.deepEqual(found.map(p => [p.name, p.count]), [['Simon Aldridge', 3], ['Desk Man', 1], ['Ellis', 1]]);
+    assert.deepEqual(found[0].forms, ['Simon Aldridge', 'Simon']);
+    assert.deepEqual(U.uncardedPeople(STORY, { known: ['Simon', 'Ellis', 'Desk Man', 'Jules'], persona: ['Leon'] }), []);
+});
+
+test('0.9: their own lines are collected with the story\'s state, tags taken out, repeats once', () => {
+    assert.deepEqual(U.spokenLines(STORY, ['Simon', 'Simon Aldridge']), [
+        '(Smug, Relaxed) "The museum gets nothing until you say so."',
+        '(Cornered) "I only came for the paintings."',
+    ]);
+    assert.deepEqual(U.spokenLines(STORY, ['Nobody']), []);
+});
+
+test('0.9: the outline of a card is its layout without its content', () => {
+    const outline = U.cardOutline('JULES VAUGHN — Lead character\n\nCANON POINT\nPortrayed after.\n\nIDENTITY\n- 23.\n\nRELATIONSHIPS\nRUE BENNETT\n- Now: x\n- Wants: y\n\nELLIS\n- Wants: z\n\nAPPEARANCE\n- Tall.');
+    assert.equal(outline, 'NAME — (tier) character\nCANON POINT\nIDENTITY\nRELATIONSHIPS\n  NAME (who they are to this character)\n  - Now: …\n  - Wants: …\nAPPEARANCE');
+});
+
+test('0.9: the new-card prompts: story only, tiers, own lines as samples, the template, the stamp', async () => {
+    const { CARD_TEMPLATE } = await import('../template.js');
+    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v8') && CARD_TEMPLATE.includes('FINAL CHECKS') && CARD_TEMPLATE.trim().endsWith('Sample lines are speech and stay as they are.'));
+    const sys = U.newCardSystemPrompt('Leon', CARD_TEMPLATE);
+    for (const part of ['Never invent backstory', 'the story wins over the template\'s counts', 'Minor (at most 700 tokens)', 'Sample lines come from their own lines in the story', 'Written from the story, updated with the story up to', 'CHARACTER CARD TEMPLATE — v8', '<tier>', 'an entry for Leon']) assert.ok(sys.includes(part), part);
+    const up = U.newCardUserPrompt({ name: 'Simon Aldridge', forms: ['Simon Aldridge', 'Simon'], count: 3, firstDate: 'Day 7 - Friday 23 May', lastDate: 'Day 8 - Saturday 24 May', log: ['- Day 7: x'], lines: ['(Cornered) "I only came."'], notebook: ['[R] Simon told Leon: y.'], outline: 'CANON POINT', storyDate: 'Day 8 - Saturday 24 May', days: 'STORY DAYS: z' });
+    for (const part of ['NEW CARD FOR: Simon Aldridge (also written as: Simon). Seen in 3 replies, from Day 7 - Friday 23 May to Day 8 - Saturday 24 May.', '<outline>\nCANON POINT', '<log>\n- Day 7: x', '<lines>\n(Cornered)', '<notebook>\n[R] Simon told Leon', 'STORY DAYS: z']) assert.ok(up.includes(part), part);
+    const fix = U.newCardFixUserPrompt({ name: 'Simon', log: [] }, 'CARD', [{ kind: 'unsupported', text: 'a brother -> not in the story' }]);
+    assert.ok(fix.includes('YOUR CARD:\n<card>\nCARD\n</card>') && fix.includes('UNSUPPORTED: a brother -> not in the story') && !fix.includes('Write the card for Simon. Return'));
+});
+
+test('0.9: new-card replies and check replies are read', () => {
+    assert.deepEqual(U.parseNewCard('<think>x</think><tier>Supporting</tier>\n<card>\nSIMON — Supporting character\n\nIDENTITY\n- x\n</card>'), { card: 'SIMON — Supporting character\n\nIDENTITY\n- x', tier: 'supporting' });
+    assert.deepEqual(U.parseNewCard('nothing'), { card: '', tier: '' });
+    assert.deepEqual(U.parseCardCheck('<problem kind="missing">his job -> curator, Day 7</problem><problem kind="odd">x</problem>'), [{ kind: 'missing', text: 'his job -> curator, Day 7' }, { kind: 'wrong', text: 'x' }]);
+    assert.deepEqual(U.parseCardCheck('<ok/>'), []);
+    assert.equal(U.parseCardCheck('fine'), null);
+    assert.ok(U.newCardCheckSystemPrompt('Leon').includes('a sample line that isn\'t one of their own lines'));
+});
+
+test('0.9: code warnings for a new card: needed sections, the entry for the player, size, dates', () => {
+    const bare = 'SIMON — Minor character\n\nIDENTITY\n- Curator. Met Leon yesterday at 3 PM.';
+    const w = U.newCardWarnings(bare, { tier: 'minor', personaNames: ['Leon'] });
+    for (const part of ['No CANON POINT section.', 'No PERSONALITY section.', 'No SPEECH AND VOICE section.', 'No APPEARANCE section.', 'No RELATIONSHIPS section.']) assert.ok(w.includes(part), part);
+    assert.ok(w.some(x => x.startsWith('Counts from a day: yesterday')) && w.some(x => x.startsWith('Clock time: 3 PM')));
+    const full = 'SIMON — Minor character\n\nCANON POINT\nWritten from the story, updated with the story up to Day 8 - Saturday 24 May.\n\nIDENTITY\n- Curator.\n\nPERSONALITY\n1. Alone: x\n\nSPEECH AND VOICE\nSmooth.\n\nRELATIONSHIPS\nJULES\n- Wants: x\n\nAPPEARANCE\n- Grey suit.';
+    assert.deepEqual(U.newCardWarnings(full, { tier: 'minor', personaNames: ['Leon'] }), ['No entry for Leon under RELATIONSHIPS.']);
+    assert.ok(U.newCardWarnings(`${full}\n${'- word '.repeat(1200)}`, { tier: 'minor', personaNames: [] }).some(x => x.includes('over the minor limit of 700')));
+});

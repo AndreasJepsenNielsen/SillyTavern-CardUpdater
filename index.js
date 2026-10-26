@@ -11,12 +11,14 @@ import {
     numberCard, sectionSpans, parseOps, resolveOps, applyOps, normalizeLogLines, opsCheckSystemPrompt, opsCheckUserPrompt,
     parseOpsCheck, fixSystemPrompt, fixUserPrompt, opWarnings, opRepeats, wordDiff,
     storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines, dayLabelOps, notebookLines,
-    canonOp,
+    canonOp, uncardedPeople, spokenLines, cardOutline, newCardSystemPrompt, newCardUserPrompt, newCardCheckSystemPrompt,
+    newCardCheckUserPrompt, parseCardCheck, newCardFixUserPrompt, parseNewCard, newCardWarnings,
 } from './updater.js';
+import { CARD_TEMPLATE } from './template.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.8.1'; // keep in step with manifest.json
+const VERSION = '0.9.0'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -41,6 +43,7 @@ const DEFAULTS = Object.freeze({
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
     sections: Object.fromEntries(UPDATABLE.map(([k]) => [k, true])),
     copiedFromSummaryception: false,
+    cardTemplate: '', // template for new cards; empty = the built-in v8
 });
 
 function ctx() {
@@ -331,6 +334,12 @@ async function openUpdater() {
         <div class="cu-row"><label>Lorebook</label><select class="text_pole cu-world"></select></div>
         <div class="cu-row cu-buttons"><div class="menu_button cu-select-story">Select everyone in the story</div><div class="menu_button cu-select-none">Clear</div></div>
         <div class="cu-cards"></div>
+        <details class="cu-newcards"><summary><b>New cards</b>: people in the story without a card</summary>
+            <div class="cu-muted">People who speak on screen or have an NPC agenda row, with no card in the lorebook above. A new card is written from the story only (nothing invented), checked, and saved as a new entry with the same lorebook settings as your other cards.</div>
+            <div class="cu-people"></div>
+            <div class="cu-row"><input class="text_pole cu-newname" type="text" placeholder="Someone else: their name as the story writes it"><div class="menu_button cu-addname">Add</div></div>
+            <div class="cu-row cu-buttons"><div class="menu_button cu-newdraft">Draft new cards</div></div>
+        </details>
         <div class="cu-label">Sections to update</div>
         <div class="cu-chips">${sectionChips(s)}</div>
         <label class="checkbox_label cu-rebuild"><input type="checkbox" class="cu-rebuild-box"><span>Rebuild the ticked cards' logs from the start of the story</span></label>
@@ -389,7 +398,29 @@ async function openUpdater() {
         root.find('.cu-cards').html(html);
         root.find('[data-card]').on('change', renderPlan);
         renderPlan();
+        renderPeople();
     };
+    let people = [];
+    const renderPeople = () => {
+        const known = cards.flatMap(card => [card.title, ...card.names]);
+        const manual = people.filter(p => p.manual);
+        people = [...uncardedPeople(c.chat, { known, persona: nameVariants(c.name1 || '') }), ...manual.filter(m => !known.includes(m.name))];
+        if (!people.length) {
+            root.find('.cu-people').html('<div class="cu-muted">Everyone who speaks on screen has a card.</div>');
+            return;
+        }
+        root.find('.cu-people').html(people.map((p, i) => `<label class="checkbox_label cu-card"><input type="checkbox" data-person="${i}"><span>${esc(p.name)}</span><span class="cu-muted">${p.manual ? 'added by you' : `speaks or has an agenda in ${p.count} repl${p.count === 1 ? 'y' : 'ies'}${p.forms.length > 1 ? ` · also ${esc(p.forms.filter(f => f !== p.name).join(', '))}` : ''}`}</span></label>`).join(''));
+    };
+    root.find('.cu-addname').on('click', () => {
+        const name = String(root.find('.cu-newname').val() || '').trim();
+        if (!name) return;
+        people.push({ name, forms: [name], count: 0, manual: true });
+        root.find('.cu-newname').val('');
+        const keep = new Set(root.find('[data-person]:checked').toArray().map(el => people[Number(el.dataset.person)]?.name));
+        keep.add(name);
+        renderPeople();
+        root.find('[data-person]').each(function () { this.checked = keep.has(people[Number(this.dataset.person)]?.name); });
+    });
     worldSel.on('change', renderCards);
     await renderCards();
 
@@ -417,6 +448,27 @@ async function openUpdater() {
         stopAfter = true;
         root.find('.cu-status').text('Stopping after this card…');
     });
+    const runNew = async () => {
+        if (running) return;
+        const chosen = root.find('[data-person]:checked').toArray().map(el => people[Number(el.dataset.person)]).filter(Boolean);
+        if (!chosen.length) return toastr.info('Tick at least one person under New cards.', 'Card Updater');
+        running = true;
+        stopAfter = false;
+        root.find('.cu-draft, .cu-tighten, .cu-newdraft').addClass('disabled');
+        root.find('.cu-stop').show();
+        const v = String(worldSel.val());
+        const worlds = v === '__active__' ? active : [v];
+        for (let i = 0; i < chosen.length; i++) {
+            if (stopAfter || abort.signal.aborted) break;
+            const block = $('<div class="cu-result"></div>').appendTo(root.find('.cu-results'));
+            await runNewCard(chosen[i], worlds, cards, s, block, root.find('.cu-status'), abort.signal, `${i + 1}/${chosen.length}`);
+        }
+        running = false;
+        root.find('.cu-draft, .cu-tighten, .cu-newdraft').removeClass('disabled');
+        root.find('.cu-stop').hide();
+        root.find('.cu-status').text(stopAfter ? 'Stopped.' : 'Done. Review each new card below and save the ones you want.');
+    };
+    root.find('.cu-newdraft').on('click', runNew);
     const runAll = async (tighten) => {
         if (running) return;
         const chosen = chosenCards();
@@ -425,7 +477,7 @@ async function openUpdater() {
         if (!kinds.length) return toastr.info('Tick at least one section.', 'Card Updater');
         running = true;
         stopAfter = false;
-        root.find('.cu-draft, .cu-tighten').addClass('disabled');
+        root.find('.cu-draft, .cu-tighten, .cu-newdraft').addClass('disabled');
         root.find('.cu-stop').show();
         const doRebuild = rebuild();
         const doRelog = relog();
@@ -437,7 +489,7 @@ async function openUpdater() {
             else await runCard(chosen[i], kinds, doRebuild, s, block, root.find('.cu-status'), abort.signal, counter, doRelog);
         }
         running = false;
-        root.find('.cu-draft, .cu-tighten').removeClass('disabled');
+        root.find('.cu-draft, .cu-tighten, .cu-newdraft').removeClass('disabled');
         root.find('.cu-stop').hide();
         root.find('.cu-rebuild-box, .cu-relog-box').prop('checked', false);
         renderPlan();
@@ -991,6 +1043,216 @@ async function saveOps(card, content, items, storyDate, block, logInfo) {
     }
 }
 
+// ---------------------------------------------------------------- new cards
+
+/** A lorebook entry with nothing in it, for a lorebook that has no card to copy settings from. */
+const ENTRY_DEFAULTS = Object.freeze({
+    key: [], keysecondary: [], comment: '', content: '', constant: false, vectorized: false, selective: true, selectiveLogic: 0,
+    addMemo: true, order: 100, position: 0, disable: false, excludeRecursion: false, preventRecursion: false, delayUntilRecursion: false,
+    probability: 100, useProbability: true, depth: 4, group: '', groupOverride: false, groupWeight: 100, scanDepth: null,
+    caseSensitive: null, matchWholeWords: null, useGroupScoring: null, automationId: '', role: null, sticky: 0, cooldown: 0, delay: 0,
+});
+
+/** Adds an entry to a lorebook with the settings of a card already in it, so it triggers like the others. @returns {Promise<string>} its uid */
+async function createEntry(world, { comment, keys, content }) {
+    const c = ctx();
+    const data = await c.loadWorldInfo(world);
+    if (!data) throw new Error(`The lorebook ${world} could not be loaded.`);
+    data.entries ||= {};
+    const like = Object.values(data.entries).find(e => e && typeof e.content === 'string' && looksLikeCard(e.content));
+    const uid = Math.max(-1, ...Object.keys(data.entries).map(Number).filter(Number.isFinite)) + 1;
+    const entry = like ? structuredClone(like) : structuredClone(ENTRY_DEFAULTS);
+    Object.assign(entry, { uid, key: keys, keysecondary: [], comment, content, disable: false, displayIndex: uid });
+    data.entries[uid] = entry;
+    await c.saveWorldInfo(world, data, true);
+    try {
+        c.reloadWorldInfoEditor?.(world, false);
+    } catch { /* editor not open */ }
+    return String(uid);
+}
+
+async function runNewCard(person, worlds, cards, s, block, status, signal, counter) {
+    const c = ctx();
+    const started = Date.now();
+    const elapsed = () => `${Math.round((Date.now() - started) / 1000)} s`;
+    const head = (extra = '') => `<div class="cu-card-title">New card: ${esc(person.name)} <span class="cu-muted">${esc(extra)}</span></div>`;
+    const names = [...new Set([...(person.forms || [person.name]).flatMap(f => nameVariants(f)), person.name])];
+    const dates = storyDates(c.chat);
+    const storyDate = storyDateFrom(c.chat);
+    const progress = what => ({ contentChars, reasoningChars }) => status.text(`${person.name} (${counter}): ${what}… ${elapsed()} · thinking ${reasoningChars.toLocaleString()} chars · writing ${contentChars.toLocaleString()} chars`);
+
+    // Step 1: everything the story has on them, as a log.
+    const { items, end } = storyItems(c.chat, c.chatMetadata?.summaryception, { userName: c.name1 });
+    const chunks = chunkItems(filterForCharacter(items, names), CHUNK_CHARS);
+    const log = [];
+    if (chunks.length) {
+        let done = 0;
+        const show = () => status.text(`${person.name} (${counter}): reading the story, ${done} of ${chunks.length} part${chunks.length === 1 ? '' : 's'} done… ${elapsed()}`);
+        show();
+        const tick = setInterval(show, 1000);
+        const sys = logSystemPrompt(person.name, c.name1);
+        try {
+            const parts = await runPool(chunks.map(chunk => async () => {
+                const firstMsg = chunk.items.find(x => x.kind === 'message' || x.from >= 0);
+                const lastDate = firstMsg && firstMsg.from > 0 ? storyDateFrom(c.chat, firstMsg.from - 1) : '';
+                const reply = await sendWithRetry(s, sys, logUserPrompt({ name: person.name, names, text: chunk.text, lastDate }), { signal, reasoning: s.logThinking });
+                done++;
+                return parseLog(reply);
+            }), PARALLEL);
+            for (const p of parts) log.push(...p);
+        } catch (err) {
+            clearInterval(tick);
+            console.error(LOG, err);
+            block.html(`${head(elapsed())}${errorHtml('Reading the story failed', err, signal)}`);
+            return;
+        }
+        clearInterval(tick);
+    }
+    const job = {
+        name: person.name, forms: person.forms || [person.name], count: person.count || 0,
+        firstDate: Number.isInteger(person.first) ? storyDateFrom(c.chat, person.first) : '',
+        lastDate: Number.isInteger(person.last) ? storyDateFrom(c.chat, person.last) : '',
+        log: normalizeLogLines(log, dates),
+        lines: spokenLines(c.chat, names),
+        notebook: notebookLines(c.chat, names),
+        trackers: trackerLines(c.chat, names),
+        storyDate, days: storyDaysNote(dates),
+        outline: '',
+    };
+    if (!job.log.length && !job.lines.length && !job.notebook.length) {
+        block.html(`${head(elapsed())}<div class="cu-warn">The story has nothing on ${esc(person.name)} under that name, so there is nothing to write a card from.</div>`);
+        return;
+    }
+    const sibling = cards.find(card => worlds.includes(card.world));
+    if (sibling) {
+        try {
+            job.outline = cardOutline(await readEntry(sibling.world, sibling.uid) || '');
+        } catch { /* layout is a help, not a must */ }
+    }
+
+    // Step 2: write the card.
+    const template = String(s.cardTemplate || '').trim() || CARD_TEMPLATE;
+    const system = newCardSystemPrompt(c.name1, template);
+    status.text(`${person.name} (${counter}): writing the card…`);
+    const raws = [];
+    let drafted;
+    try {
+        const reply = await sendWithRetry(s, system, newCardUserPrompt(job), {
+            signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('writing the card'),
+            onRetry: () => status.text(`${person.name} (${counter}): the model got stuck, trying once more…`),
+        });
+        raws.push(['Model reply', reply]);
+        drafted = parseNewCard(reply);
+    } catch (err) {
+        console.error(LOG, err);
+        block.html(`${head(elapsed())}${errorHtml('Writing the card failed', err, signal)}${logDetails(job.log)}`);
+        return;
+    }
+    if (!drafted.card) {
+        block.html(`${head(elapsed())}<div class="cu-warn">The reply had no card in it.</div>${raws.map(([l, t]) => `<details><summary>${esc(l)}</summary><pre class="cu-pre">${esc(t)}</pre></details>`).join('')}`);
+        return;
+    }
+    const stamp = text => {
+        const op = canonOp(text, storyDate);
+        return op ? applyOps(text, [op]) : text;
+    };
+    let card = stamp(drafted.card);
+    let tier = drafted.tier;
+
+    // Step 3: check it against the story, and fix what the check finds.
+    const check = { ran: false };
+    if (s.checkDrafts) {
+        status.text(`${person.name} (${counter}): checking the card…`);
+        try {
+            const reply = await sendWithRetry(s, newCardCheckSystemPrompt(c.name1), newCardCheckUserPrompt({ ...job, card }), { signal, reasoning: s.checkThinking, onProgress: progress('checking the card') });
+            raws.push(['Check reply', reply]);
+            const found = parseCardCheck(reply);
+            Object.assign(check, found === null ? { ran: true, failed: 'The check reply could not be read.' } : { ran: true, problems: found });
+        } catch (err) {
+            if (signal?.aborted) {
+                block.html(`${head()}<div class="cu-warn">Cancelled.</div>`);
+                return;
+            }
+            Object.assign(check, { ran: true, failed: err?.message || String(err) });
+        }
+        if (check.problems?.length && s.fixDrafts) {
+            status.text(`${person.name} (${counter}): fixing ${check.problems.length} problem${check.problems.length === 1 ? '' : 's'}…`);
+            try {
+                const reply = await sendWithRetry(s, system, newCardFixUserPrompt(job, card, check.problems), { signal, reasoning: s.updateThinking, model: s.updateModel, onProgress: progress('fixing the card') });
+                raws.push(['Fix reply', reply]);
+                const fixed = parseNewCard(reply);
+                if (fixed.card) {
+                    card = stamp(fixed.card);
+                    tier = fixed.tier || tier;
+                    check.fixed = true;
+                }
+            } catch (err) {
+                if (signal?.aborted) {
+                    block.html(`${head()}<div class="cu-warn">Cancelled.</div>`);
+                    return;
+                }
+                check.fixFailed = err?.message || String(err);
+            }
+        }
+    }
+    renderNewCard(person, job, { card, tier, check, raws, worlds, end, log: job.log }, block, elapsed());
+}
+
+const PROBLEM_TEXT = { unsupported: 'Not in the story', wrong: 'Wrong', missing: 'Missing', rule: 'Breaks a template rule' };
+
+function renderNewCard(person, job, draft, block, took) {
+    const c = ctx();
+    const personaNames = nameVariants(c.name1 || '');
+    const allWorlds = c.getWorldInfoNames ? c.getWorldInfoNames() : draft.worlds;
+    const keys = [...new Set([person.name, ...(person.forms || []), ...nameVariants(person.name)])];
+    const checkLine = !draft.check.ran ? ''
+        : draft.check.failed ? `<div class="cu-warn">The check failed (${esc(draft.check.failed)}), so read the card carefully.</div>`
+            : !draft.check.problems.length ? '<div class="cu-ok">Check: nothing invented, wrong or missing.</div>'
+                : `<div class="${draft.check.fixed ? 'cu-muted' : 'cu-warn'}">Check: ${draft.check.problems.length} problem${draft.check.problems.length === 1 ? '' : 's'}${draft.check.fixed ? ', sent back and fixed:' : draft.check.fixFailed ? `; fixing failed (${esc(draft.check.fixFailed)}):` : ':'}</div>${draft.check.problems.map(p => `<div class="${draft.check.fixed ? 'cu-muted' : 'cu-warn'}">• ${esc(PROBLEM_TEXT[p.kind] || p.kind)}: ${esc(p.text.slice(0, 300))}</div>`).join('')}`;
+    const tail = `${logDetails(draft.log)}${job.lines.length ? `<details><summary>Their lines used (${job.lines.length})</summary><pre class="cu-pre">${esc(job.lines.join('\n'))}</pre></details>` : ''}${job.notebook.length ? `<details><summary>Notebook lines used (${job.notebook.length})</summary><pre class="cu-pre">${esc(job.notebook.join('\n'))}</pre></details>` : ''}${draft.raws.map(([l, t]) => `<details><summary>${esc(l)}</summary><pre class="cu-pre">${esc(t)}</pre></details>`).join('')}`;
+    const warnHtml = text => newCardWarnings(text, { tier: draft.tier, personaNames }).map(w => `<div class="cu-warn">${esc(w)}</div>`).join('');
+    const size = text => `<div class="cu-muted">${draft.tier ? `${draft.tier.charAt(0).toUpperCase()}${draft.tier.slice(1)} character · ` : ''}about ${approxTokens(text.length).toLocaleString()} tokens.</div>`;
+    block.html(`<div class="cu-card-title">New card: ${esc(person.name)} <span class="cu-muted">${esc(took)}</span></div>
+        ${checkLine}
+        <div class="cu-newwarn">${warnHtml(draft.card)}</div>
+        <div class="cu-newsize">${size(draft.card)}</div>
+        <textarea class="text_pole cu-edit cu-newtext" rows="22">${esc(draft.card)}</textarea>
+        <div class="cu-grid cu-newmeta">
+            <label>Lorebook</label><select class="text_pole cu-newworld">${allWorlds.map(w => `<option value="${esc(w)}"${w === draft.worlds[0] ? ' selected' : ''}>${esc(w)}</option>`).join('')}</select>
+            <label>Entry title</label><input class="text_pole cu-newtitle" type="text" value="${esc(person.name)}">
+            <label>Keys (comma between)</label><input class="text_pole cu-newkeys" type="text" value="${esc(keys.join(', '))}">
+        </div>
+        <div class="cu-row cu-buttons"><div class="menu_button cu-newsave">Save as a new entry</div></div>
+        ${tail}`);
+    block.find('.cu-newtext').on('input', function () {
+        block.find('.cu-newwarn').html(warnHtml(this.value));
+        block.find('.cu-newsize').html(size(this.value));
+    });
+    block.find('.cu-newsave').on('click', async () => {
+        const content = String(block.find('.cu-newtext').val() || '').replace(/\s+$/, '');
+        const world = String(block.find('.cu-newworld').val() || '');
+        const comment = String(block.find('.cu-newtitle').val() || person.name).trim();
+        const keyList = String(block.find('.cu-newkeys').val() || '').split(',').map(k => k.trim()).filter(Boolean);
+        if (!content.trim() || !world) return toastr.info('The card or the lorebook is empty.', 'Card Updater');
+        if (!looksLikeCard(content)) toastr.warning('This doesn\'t look like a card to Card Slicer (it needs sections such as PERSONALITY and SPEECH AND VOICE).', 'Card Updater');
+        try {
+            const uid = await createEntry(world, { comment, keys: keyList, content });
+            const key = `${world}|${uid}`;
+            const st = chatStore();
+            st.logs[key] = { coveredTo: draft.end, lines: draft.log, applied: draft.log.length };
+            st.originals[key] = content;
+            st.saved[key] = String(stringHash(content));
+            await c.saveMetadata();
+            block.find('.cu-newsave').replaceWith(`<div class="cu-ok">Saved to ${esc(world)} as "${esc(comment)}". Later updates continue from its log.</div>`);
+            block.find('textarea, input, select').prop('disabled', true);
+            toastr.success(`${comment} added to ${world}.`, 'Card Updater');
+        } catch (err) {
+            console.error(LOG, err);
+            toastr.error(`Saving failed: ${err?.message || err}`, 'Card Updater');
+        }
+    });
+}
+
 function logDetails(lines) {
     return `<details><summary>Log lines used (${lines.length})</summary><pre class="cu-pre">${esc(lines.join('\n'))}</pre></details>`;
 }
@@ -1354,6 +1616,10 @@ function settingsHtml() {
       <div class="cu-source" data-for="chat">
         <div class="cu-muted">Uses the chat's model and sampler settings, without your preset's prompts.</div>
       </div>
+      <details class="cu-template"><summary>Card template for new cards</summary>
+        <div class="cu-muted">Empty uses the built-in template (v8). Paste another template here to use it instead.</div>
+        <textarea id="cu_template" class="text_pole" rows="8" placeholder="Built-in: CHARACTER CARD TEMPLATE — v8"></textarea>
+      </details>
       <div class="cu-grid">
         <label for="cu_limit" title="Updates are told to keep cards under this, and the window shows each card's size against it. 5000 is the template's limit for a lead.">Card size limit (tokens, 0 = none)</label>
         <input id="cu_limit" class="text_pole" type="number" min="0" step="500">
@@ -1412,6 +1678,7 @@ function bindSettings() {
     $('#cu_sweep').prop('checked', !!s.sweepDrafts).on('change', function () { s.sweepDrafts = !!this.checked; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
     $('#cu_limit').val(s.cardLimit).on('input', function () { s.cardLimit = Math.max(0, parseInt(this.value, 10) || 0); save(); });
+    $('#cu_template').val(s.cardTemplate || '').on('input', function () { s.cardTemplate = this.value; save(); });
     $('#cu_first').val(s.firstRunMessages).on('input', function () { s.firstRunMessages = Math.max(0, parseInt(this.value, 10) || 0); save(); });
 
     $('#cu_copy_sc').on('click', () => {

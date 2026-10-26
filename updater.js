@@ -1,6 +1,6 @@
 // Card Updater: the parts that don't touch SillyTavern (sections, prompt, reply parsing, diffs, checks).
 
-import { headingInfo, classifyHeading, cleanProse, stateBlock, physicsText, mentionsAny, sigWords, overlap } from './cardparse.js';
+import { headingInfo, classifyHeading, cleanProse, stateBlock, physicsText, mentionsAny, sigWords, overlap, speakerLabels, agendaRows } from './cardparse.js';
 
 /** Sections the updater may change, in the order they're offered. */
 export const UPDATABLE = [
@@ -1704,4 +1704,220 @@ export function wordDiff(oldText, newText) {
     }
     flush();
     return result;
+}
+
+
+// ---------------------------------------------------------------- new cards
+
+const NOT_PEOPLE = new Set(['narrator', 'gm', 'game master', 'system', 'you', 'everyone', 'everybody', 'all', 'both', 'crowd', 'group',
+    'group chat', 'chat', 'text', 'texts', 'phone', 'news', 'tv', 'radio', 'voice', 'voices', 'someone', 'unknown', 'others', 'other', 'r', 't']);
+
+/**
+ * People the story shows on screen (speaker labels in replies, rows of the NPC agendas) who have no card yet.
+ * Forms of one name ("Simon", "Simon Aldridge") count as one person, shown by the longest form.
+ * @param {object[]} chat
+ * @param {{known?: string[], persona?: string[]}} opts names that already have a card, and the player's names
+ * @returns {{name: string, forms: string[], count: number, first: number, last: number}[]} most seen first
+ */
+export function uncardedPeople(chat, { known = [], persona = [] } = {}) {
+    const taken = new Set();
+    for (const n of [...known, ...persona]) {
+        const low = String(n ?? '').toLowerCase().trim();
+        if (!low) continue;
+        taken.add(low);
+        taken.add(low.split(/\s+/)[0]);
+    }
+    const groups = new Map();
+    (Array.isArray(chat) ? chat : []).forEach((m, i) => {
+        if (!m || m.is_user) return;
+        const mes = String(m.mes ?? '');
+        const seen = new Set([...speakerLabels(cleanProse(mes)), ...agendaRows(stateBlock(mes)).map(r => r.owner)]);
+        for (const raw of seen) {
+            const name = String(raw).replace(/[*_"“”]/g, '').replace(/\s+/g, ' ').trim();
+            if (!name || name.length > 40 || !/^\p{Lu}/u.test(name) || /\d/.test(name)) continue;
+            const low = name.toLowerCase();
+            const first = low.split(' ')[0];
+            if (NOT_PEOPLE.has(low) || taken.has(low) || taken.has(first)) continue;
+            if (!groups.has(first)) groups.set(first, { forms: new Map(), msgs: new Set(), first: i, last: i });
+            const g = groups.get(first);
+            g.forms.set(name, (g.forms.get(name) || 0) + 1);
+            g.msgs.add(i);
+            g.last = i;
+        }
+    });
+    return [...groups.values()].map((g) => {
+        const forms = [...g.forms.keys()].sort((a, b) => b.length - a.length);
+        return { name: forms[0], forms, count: g.msgs.size, first: g.first, last: g.last };
+    }).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+/**
+ * The person's own lines in the story, from their speaker labels: "(State) what they said", newest last.
+ * Tags (dialogue colours, markup) are taken out; the words stay.
+ */
+export function spokenLines(chat, names, max = 60) {
+    const out = [];
+    const seen = new Set();
+    for (const m of Array.isArray(chat) ? chat : []) {
+        if (!m || m.is_user) continue;
+        const lines = cleanProse(m.mes).split(/\r?\n/);
+        lines.forEach((line, k) => {
+            const lab = line.match(/\[([^\]\n]{1,40})\]\s*\(([^)\n]{0,80})\)\s*:?\s*(.*)$/);
+            if (!lab || !mentionsAny(lab[1], names)) return;
+            let said = lab[3];
+            if (!said.trim()) said = (lines.slice(k + 1).find(l => l.trim()) || '');
+            said = said.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+            if (!said) return;
+            const text = `(${lab[2].trim()}) ${said.length > 300 ? `${said.slice(0, 300)}…` : said}`;
+            if (seen.has(text)) return;
+            seen.add(text);
+            out.push(text);
+        });
+    }
+    return out.slice(-max);
+}
+
+/** The headings of a card and the field labels of its first relationship entry: the layout, without the content. */
+export function cardOutline(content) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const out = [];
+    const first = lines.find(l => l.trim());
+    if (first && !classifyHeading(headingInfo(first)?.core || '')) out.push(/\s[—–-]\s/.test(first) ? 'NAME — (tier) character' : 'NAME');
+    for (const r of sectionRanges(content)) {
+        if (r.kind === 'preamble') continue;
+        out.push(lines[r.start].trim());
+        if (r.kind !== 'relationships') continue;
+        let entry = false;
+        for (let i = r.start + 1; i < r.end; i++) {
+            const h = headingInfo(lines[i]);
+            if (h) {
+                if (entry) break;
+                entry = true;
+                out.push('  NAME (who they are to this character)');
+                continue;
+            }
+            const lab = fieldLabel(lines[i]);
+            if (entry && lab) out.push(`  ${lines[i].match(/^\s*(?:[-*•]\s*)?/)[0]}${lab.charAt(0).toUpperCase()}${lab.slice(1)}: …`);
+        }
+    }
+    return out.join('\n');
+}
+
+export function newCardSystemPrompt(userName, template) {
+    const u = userName || 'the player character';
+    return `You write a new character card for someone who has appeared in a long-running roleplay but has no card yet. The roleplay model will read this card on every turn as the truth about them.
+
+USE ONLY THE STORY
+- Write only what the story shows: the log of what they did, said, saw and were told, their own lines, the game's notebook rows and tracker rows. Never invent backstory, family, history, traits, looks, motives or relationships the story doesn't show.
+- Leave out a section the story gives nothing for. Every card still has CANON POINT, IDENTITY, PERSONALITY, SPEECH AND VOICE, APPEARANCE and RELATIONSHIPS with an entry for ${u}, each holding only what the story shows. Where the template asks for more than the story gives (counts of lines, every section for a lead), write less: the story wins over the template's counts.
+- Choose the tier from how much the story has on them: seen a few times, mostly in relation to others: Minor (at most 700 tokens); recurring, with motives of their own: Supporting (at most 1800 tokens); central to the story: Lead (at most 5000 tokens). Never pad a card to fill its tier.
+- Sample lines come from their own lines in the story: copy them, shortened where needed, each labelled with its state. Don't write new ones.
+- Where the template asks for a show, transcript or episode summary, use the story instead.
+- What they learned in play goes on the card: what ${u} told them in the Knows list of their entry for ${u}, where ${u} stands with them in its Now line, anything else they found out in KNOWLEDGE or the entry for the person it is about, a secret in SECRETS with who knows it and who it is kept from.
+- Dates: the story's day and date in full, the way the chat headers write them (see STORY DAYS). Never words that count from a day.
+
+LAYOUT
+- First line: their name in capitals, then " — Minor character", " — Supporting character" or " — Lead character".
+- All-caps section headings on their own lines, laid out like the other cards in this lorebook (OUTLINE). Relationship entries: the person's name in capitals on its own line, then field lines.
+- CANON POINT is one line: "Written from the story, updated with the story up to [the current story date]."
+
+THE TEMPLATE (how every card in this lorebook is written)
+${template}
+
+WHAT TO RETURN
+<tier>Minor, Supporting or Lead</tier>
+<card>
+the whole card
+</card>`;
+}
+
+export function newCardUserPrompt({ name, forms = [], count = 0, firstDate = '', lastDate = '', log = [], lines = [], notebook = [], trackers = '', outline = '', storyDate = '', days = '' }) {
+    const parts = [];
+    const also = forms.filter(f => f !== name);
+    parts.push(`NEW CARD FOR: ${name}${also.length ? ` (also written as: ${also.join(', ')})` : ''}. Seen in ${count} repl${count === 1 ? 'y' : 'ies'}${firstDate ? `, from ${firstDate}` : ''}${lastDate && lastDate !== firstDate ? ` to ${lastDate}` : ''}.`);
+    if (outline) parts.push(`OUTLINE OF ANOTHER CARD IN THIS LOREBOOK (the layout only; don't copy anything from it):\n<outline>\n${outline}\n</outline>`);
+    parts.push(`WHAT HAPPENED WITH ${name} IN THE STORY (oldest first):\n<log>\n${log.join('\n') || '(nothing logged)'}\n</log>`);
+    if (lines.length) parts.push(`${name}'S OWN LINES IN THE STORY (the state in brackets is the story's):\n<lines>\n${lines.join('\n')}\n</lines>`);
+    if (notebook.length) parts.push(`THE GAME'S NOTEBOOK ROWS NAMING ${name}:\n<notebook>\n${notebook.join('\n')}\n</notebook>`);
+    if (trackers) parts.push(`THE GAME'S TRACKER ROWS ABOUT ${name} FROM THE LATEST TURN:\n<trackers>\n${trackers}\n</trackers>`);
+    if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
+    if (days) parts.push(days);
+    parts.push(`Write the card for ${name}. Return only <tier> and <card>.`);
+    return parts.join('\n\n');
+}
+
+export function newCardCheckSystemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You check a new character card that was written from a roleplay. You don't rewrite it; you only report. You get the card and its sources: the log of what happened with the character, their own lines, and the game's notebook and tracker rows.
+
+Report:
+- UNSUPPORTED: anything the card states that the sources don't show: invented backstory, family, history, traits, looks, relationships, motives, or a sample line that isn't one of their own lines.
+- WRONG: anything the sources contradict: who did what to whom, which act, a date, a name mixed up.
+- MISSING: a lasting fact from the sources that the card needs and doesn't have: who they are, what they want, how they talk, what they know about ${u}, a notebook row where they tell, are told, see or find out something.
+- RULE: a rule of the card template broken: interpretation instead of events, words that count from a day (today, yesterday, "three days ago"), a clock time, their current mood or whereabouts, a meta-instruction, a list of things they avoid, a card well past its tier's size.
+
+Quote words exactly. One tag per problem:
+<problem kind="unsupported">the words -> why</problem>
+kind is one of: unsupported, wrong, missing, rule.
+If there are no problems, reply with exactly: <ok/>`;
+}
+
+export function newCardCheckUserPrompt({ name, card, log = [], lines = [], notebook = [], trackers = '' }) {
+    const parts = [`THE NEW CARD FOR ${name}:\n<card>\n${card}\n</card>`];
+    parts.push(`WHAT HAPPENED WITH ${name} IN THE STORY:\n<log>\n${log.join('\n') || '(nothing logged)'}\n</log>`);
+    if (lines.length) parts.push(`${name}'S OWN LINES:\n<lines>\n${lines.join('\n')}\n</lines>`);
+    if (notebook.length) parts.push(`NOTEBOOK ROWS:\n<notebook>\n${notebook.join('\n')}\n</notebook>`);
+    if (trackers) parts.push(`TRACKER ROWS:\n<trackers>\n${trackers}\n</trackers>`);
+    parts.push('Report every problem, or <ok/>.');
+    return parts.join('\n\n');
+}
+
+const CARD_KINDS = new Set(['unsupported', 'wrong', 'missing', 'rule']);
+
+/** @returns {{kind: string, text: string}[] | null} null when the reply has nothing readable */
+export function parseCardCheck(reply) {
+    const text = stripThinking(reply);
+    const out = [];
+    for (const m of text.matchAll(/<problem\b([^>]*)>([\s\S]*?)<\/problem>/gi)) {
+        const kind = String(attrs(m[1]).kind || '').toLowerCase();
+        const t = m[2].trim();
+        if (t) out.push({ kind: CARD_KINDS.has(kind) ? kind : 'wrong', text: t });
+    }
+    if (!out.length && !/<ok\s*\/?>/i.test(text)) return null;
+    return out;
+}
+
+export function newCardFixUserPrompt(args, card, problems) {
+    return `${newCardUserPrompt(args).replace(/Write the card for [^\n]*$/, '')}YOUR CARD:\n<card>\n${card}\n</card>\n\nWHAT A CHECKER FOUND:\n${problems.map(p => `${p.kind.toUpperCase()}: ${p.text}`).join('\n')}\n\nReturn the whole card again with these fixed: take out what is unsupported, correct what is wrong, add what is missing from the sources, and fix the rule breaks. Change nothing else. Return only <tier> and <card>.`;
+}
+
+/** The card and tier from a new-card reply. */
+export function parseNewCard(reply) {
+    const text = stripThinking(reply);
+    const card = (inner(text, 'card') || '').replace(/^\n+|\s+$/g, '');
+    const tier = ((inner(text, 'tier') || '').match(/minor|supporting|lead/i) || [''])[0].toLowerCase();
+    return { card, tier };
+}
+
+const TIER_LIMIT = { minor: 700, supporting: 1800, lead: 5000 };
+
+/**
+ * Warnings for a new card from code: size against its tier, words counting from a day, clock times, and the
+ * sections every card needs.
+ */
+export function newCardWarnings(card, { tier = '', personaNames = [] } = {}) {
+    const out = [];
+    const tokens = Math.round(String(card).length / 3.8);
+    const limit = TIER_LIMIT[tier];
+    if (limit && tokens > limit * 1.1) out.push(`About ${tokens.toLocaleString('en-US')} tokens, over the ${tier} limit of ${limit.toLocaleString('en-US')}.`);
+    const rel = relativeTimeWords(card);
+    if (rel.length) out.push(`Counts from a day: ${rel.join(', ')}. Use the named date instead.`);
+    const clock = clockTimes(card);
+    if (clock.length) out.push(`Clock time: ${clock.join(', ')}. The date is enough.`);
+    const kinds = new Set(sectionRanges(card).map(r => r.kind));
+    for (const [k, label] of [['canon', 'CANON POINT'], ['identity', 'IDENTITY'], ['personality', 'PERSONALITY'], ['speech', 'SPEECH AND VOICE'], ['appearance', 'APPEARANCE'], ['relationships', 'RELATIONSHIPS']]) {
+        if (!kinds.has(k)) out.push(`No ${label} section.`);
+    }
+    if (kinds.has('relationships') && personaNames.length && !personaEntryLines(card, personaNames).size) out.push(`No entry for ${personaNames[0]} under RELATIONSHIPS.`);
+    return out;
 }

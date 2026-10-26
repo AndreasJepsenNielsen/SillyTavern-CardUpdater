@@ -197,3 +197,24 @@
     padding: 6px 0;
     opacity: 0.8;
 }
+
+.card-updater-window .cu-newcards {
+    margin: 8px 0;
+    padding: 4px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+}
+
+.card-updater-window .cu-newtext {
+    width: 100%;
+    margin: 6px 0;
+}
+
+.card-updater-window .cu-newmeta {
+    grid-template-columns: 9em 1fr;
+}
+
+.card-updater .cu-template textarea {
+    width: 100%;
+    font-size: 0.85em;
+}

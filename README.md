@@ -89,6 +89,25 @@ every logged line, also the ones already marked as done, without reading the sto
 Where the chat has been summarised, the first run uses the Summaryception summary; later runs read the messages
 themselves (also the hidden ones) or the summary pieces that cover them.
 
+## New cards
+
+For someone who has turned up in the story but has no card yet. Open **New cards** in the update window: it lists
+the people who speak on screen (`[Name] (State):` labels) or have an NPC agenda row and have no card in the chosen
+lorebook, most seen first. You can also type a name. Tick them and click **Draft new cards**.
+
+For each one, Card Updater reads the whole story into their log, collects their own lines (with the state the story
+gave them) and their notebook rows, and writes a card from those only: nothing invented, sections the story gives
+nothing for left out, the tier (minor, supporting, lead) and its size chosen from how much the story has on them, and
+sample lines taken from what they actually said. It follows the card template (v8, built in; paste another one under
+**Card template for new cards** in the settings to use that instead) and the layout of another card in the lorebook.
+The card gets a CANON POINT stamped with the current story date.
+
+A check reads the card against the story for anything invented, wrong, missing or against the template, and sends
+it back once to be fixed. You review the card as editable text, pick the lorebook, title and keys, and **Save as a
+new entry**. The entry copies its lorebook settings (position, order, vectorized and the rest) from a card already in
+that lorebook, so it triggers like the others, and Card Slicer slices it like any card. Its log is kept, so later
+updates continue from there.
+
 ## The GM's Notebook
 
 If the latest reply has a notebook in its state block, every **[R]** row that names the character goes to the update
