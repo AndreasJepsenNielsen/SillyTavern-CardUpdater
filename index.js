@@ -18,7 +18,7 @@ import { CARD_TEMPLATE } from './template.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.9.0'; // keep in step with manifest.json
+const VERSION = '0.9.1'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -760,9 +760,9 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
             ops[ops.indexOf(target)] = next;
             revisedIds.add(target.id);
             summary.fixed++;
-        } else if (raw.ref === null && raw.missing) {
+        } else if (raw.ref === null && raw.missing?.length) {
             const id = nextId++;
-            ops.push({ ...raw, id, source: 'missing', missingFor: raw.missing });
+            ops.push({ ...raw, id, source: 'missing', missingFor: raw.missing.filter(n => n >= 1 && n <= out.missing.length) });
             revisedIds.add(id);
             summary.missingAdded++;
         } else if (raw.ref === null) {
@@ -781,7 +781,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
         const by = ops.find(o => !o.invalid && o.source === 'stale' && (o.staleFor === x.line || (o.type !== 'add' && o.index === x.line - 1)));
         if (by) x.fixedBy = by.id;
     }
-    out.missingLeft = out.missing.filter((m, k) => !ops.some(o => !o.invalid && o.source === 'missing' && o.missingFor === k + 1));
+    out.missingLeft = out.missing.filter((m, k) => !ops.some(o => !o.invalid && o.source === 'missing' && (o.missingFor || []).includes(k + 1)));
 
     const recheck = ops.filter(o => revisedIds.has(o.id) && !o.invalid);
     if (!recheck.length) return out;
@@ -907,7 +907,7 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             if (fx.dropped) did.push(`${fx.dropped} dropped`);
             if (fx.kept) did.push(`${fx.kept} kept as they were`);
             if (fx.staleFixed) did.push(`${fx.staleFixed} outdated line${fx.staleFixed === 1 ? '' : 's'} changed`);
-            if (fx.missingAdded) did.push(`${fx.missingAdded} notebook line${fx.missingAdded === 1 ? '' : 's'} added`);
+            if (fx.missingAdded) did.push(`${fx.missingAdded} change${fx.missingAdded === 1 ? '' : 's'} adding notebook lines`);
             if (did.length) text += ` Fix: ${did.join(', ')}.`;
         }
         const rc = result.recheck;

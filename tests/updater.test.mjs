@@ -973,8 +973,8 @@ test('0.8: the update must put every notebook line on the card; the check report
     assert.deepEqual(U.parseOpsCheck('<missing>[R] Jules told Leon: she finishes maybe once a month.</missing>').missing, ['[R] Jules told Leon: she finishes maybe once a month.']);
     const fx = U.fixUserPrompt({ card: 'C', title: 'J', sections: [], log: [], ops: [], problems: [], stale: [], missing: ['[R] Jules told Leon: x.'] });
     assert.ok(fx.includes("NOTEBOOK LINES THE CARD DOESN'T HOLD YET (the game deletes them after this update):\n1. [R] Jules told Leon: x."));
-    assert.ok(U.fixSystemPrompt('Leon').includes('<change missing="1" type="add" after="80">'));
-    assert.equal(U.parseOps('<change missing="2" type="add" after="9"><new>- Knows: x.</new></change>').ops[0].missing, 2);
+    assert.ok(U.fixSystemPrompt('Leon').includes('<change missing="1,3,4" type="add" after="80">'));
+    assert.deepEqual(U.parseOps('<change missing="2" type="add" after="9"><new>- Knows: x.</new></change>').ops[0].missing, [2]);
     assert.ok(U.tightenSystemPrompt('Leon').includes('Its Knows list keeps every item that is still true'));
 });
 
@@ -1077,4 +1077,56 @@ test('0.9: code warnings for a new card: needed sections, the entry for the play
     const full = 'SIMON — Minor character\n\nCANON POINT\nWritten from the story, updated with the story up to Day 8 - Saturday 24 May.\n\nIDENTITY\n- Curator.\n\nPERSONALITY\n1. Alone: x\n\nSPEECH AND VOICE\nSmooth.\n\nRELATIONSHIPS\nJULES\n- Wants: x\n\nAPPEARANCE\n- Grey suit.';
     assert.deepEqual(U.newCardWarnings(full, { tier: 'minor', personaNames: ['Leon'] }), ['No entry for Leon under RELATIONSHIPS.']);
     assert.ok(U.newCardWarnings(`${full}\n${'- word '.repeat(1200)}`, { tier: 'minor', personaNames: [] }).some(x => x.includes('over the minor limit of 700')));
+});
+
+// ---------------------------------------------------------------- 0.9.1: one heading per list
+
+const KNOWS_CARD = `RELATIONSHIPS
+LEON (the neighbor)
+- Now: her boyfriend.
+- Shared history:
+  - Day 9 - Sunday 25 May: she moved in.
+- As it grows: x.
+
+DEZ
+- Now: Leon's other girl.
+- Knows:
+  - Leon showers before he touches her.
+- Speech: polite.`;
+
+test('0.9.1: a Knows section is created once, with its items as plain lines under the heading', () => {
+    const r = U.updatableRanges(KNOWS_CARD);
+    const ops = U.resolveOps(KNOWS_CARD, [
+        { id: 1, type: 'add', line: 3, find: null, text: '- Knows: his mother killed herself.' },
+        { id: 2, type: 'add', line: 3, find: null, text: '- Knows: he grew up in Chicago.' },
+    ], r);
+    assert.deepEqual(ops[0].result, ['- Knows:', '  - his mother killed herself.']);
+    assert.deepEqual(ops[1].result, ['  - he grew up in Chicago.']);
+    assert.equal(U.applyOps(KNOWS_CARD, ops).split('\n').slice(1, 6).join('\n'), 'LEON (the neighbor)\n- Now: her boyfriend.\n- Knows:\n  - his mother killed herself.\n  - he grew up in Chicago.');
+});
+
+test('0.9.1: one change with several labelled lines becomes one heading and plain items', () => {
+    const [op] = U.resolveOps(KNOWS_CARD, [{ id: 1, type: 'add', line: 3, find: null, text: '- Knows: his mother killed herself.\n- Knows: he grew up in Chicago.\n- Knows: he boxes.' }], U.updatableRanges(KNOWS_CARD));
+    assert.deepEqual(op.result, ['- Knows:', '  - his mother killed herself.', '  - he grew up in Chicago.', '  - he boxes.']);
+    const [h] = U.resolveOps(KNOWS_CARD, [{ id: 1, type: 'add', line: 3, find: null, text: '- Knows:\n- his mother killed herself.\n- he boxes.' }], U.updatableRanges(KNOWS_CARD));
+    assert.deepEqual(h.result, ['- Knows:', '  - his mother killed herself.', '  - he boxes.'], 'items written flat under a heading are indented under it');
+});
+
+test('0.9.1: items for an entry that has the block go after its last line, without the label', () => {
+    const lines = KNOWS_CARD.split('\n');
+    const [op] = U.resolveOps(KNOWS_CARD, [{ id: 1, type: 'add', line: lines.indexOf("- Now: Leon's other girl.") + 1, find: null, text: '- Knows: nothing of hers comes upstairs.' }], U.updatableRanges(KNOWS_CARD));
+    assert.deepEqual(op.result, ['  - nothing of hers comes upstairs.']);
+    assert.equal(op.index, lines.indexOf('  - Leon showers before he touches her.'));
+    const shared = U.resolveOps(KNOWS_CARD, [{ id: 1, type: 'add', line: 3, find: null, text: '- Shared history: Day 10 - Monday 26 May: she told Ellis.' }], U.updatableRanges(KNOWS_CARD))[0];
+    assert.deepEqual(shared.result, ['  - Day 10 - Monday 26 May: she told Ellis.']);
+    assert.equal(shared.index, lines.indexOf('  - Day 9 - Sunday 25 May: she moved in.'));
+    const now = U.resolveOps(KNOWS_CARD, [{ id: 1, type: 'add', line: 3, find: null, text: '- Wants: him.' }], U.updatableRanges(KNOWS_CARD))[0];
+    assert.deepEqual(now.result, ['- Wants: him.'], 'other fields are left as written');
+});
+
+test('0.9.1: missing notebook items come back as one change per block, covering several rows', () => {
+    const sys = U.fixSystemPrompt('Leon');
+    assert.ok(sys.includes('All the items that go in the same block are one change') && sys.includes('that change starts with the heading line "- Knows:"'));
+    assert.deepEqual(U.parseOps('<change missing="1, 3,4" type="add" after="9"><new>- Knows:\n  - x.\n  - y.</new></change>').ops[0].missing, [1, 3, 4]);
+    assert.ok(U.systemPrompt('Leon').includes('create the heading line "- Knows:" the first time') && U.systemPrompt('Leon').includes('Never repeat the label on every line'));
 });

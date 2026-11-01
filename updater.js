@@ -458,7 +458,8 @@ HOW TO WRITE A CHANGE
 - KNOWLEDGE lines use: "Knows X. Learned it from Y on [date]." / "Believes Z. Z is false." / "Suspects W, no confirmation."
 - RELATIONSHIPS: one entry per person, as things stand now. If two people have stopped speaking or got together, the entry's Now line says what the character does now.
 - Now and Wants lines say how things stand today. Don't chain dates ("since Day 6 …; since Day 7 …; since Day 8 …"): fold what still holds into the present wording, change what has ended, and leave the dated story to Shared history.
-- In the entry for ${u}, keep a Knows list of what this character has learned about ${u}: their past, family, habits, plans, and what ${u} told them about other people. One short item each, in the form the entry already uses, with who told them when it wasn't ${u}. Add what was learned in the days the log covers; remove an item only when the story has made it untrue.
+- In the entry for ${u}, keep a Knows list of what this character has learned about ${u}: their past, family, habits, plans, and what ${u} told them about other people. One short item each, with who told them when it wasn't ${u}. Add what was learned in the days the log covers; remove an item only when the story has made it untrue.
+- A list in a relationship entry (Knows, Shared history) has its label once, as a heading line, and its items under it as plain lines indented like the Shared history lines ("  - his mother killed herself."). When the entry has no Knows section yet, create the heading line "- Knows:" the first time, with each item under it. Never repeat the label on every line. New items go after the last line of that block, all in one change.
 - NOTEBOOK lines (when given) are the game's record of what people saw, heard, found out, know and told. The game deletes them once the card is updated, so every line that names this character as telling, being told, seeing, overhearing, finding out or knowing something, and that the card doesn't hold yet, becomes a change:
   - what ${u} told them: the Knows list of their entry for ${u}; where ${u} stands with them: that entry's Now line;
   - what they told ${u}: that entry's Shared history, short;
@@ -551,7 +552,7 @@ For each change the checker flagged, return one of these:
 ${CHANGE_FORMAT.replace(/<change type/g, '<change op="3" type')}
 - <drop op="3"><reason>why it goes</reason></drop> when the change shouldn't be made at all (it repeats the card, it isn't in the log, it is a passing state).
 - <keep op="3"><reason>why the checker is wrong, quoting the log</reason></keep> when the checker is wrong and the change is right as it is.
-For each notebook line the checker found missing: a change without op that puts it on the card, with missing set to its number (<change missing="1" type="add" after="80">), in the place the NOTEBOOK rule above gives it.
+For the notebook lines the checker found missing: put them on the card in the places the NOTEBOOK rule above gives them. All the items that go in the same block are one change: one <change> without op, its <new> holding every item as a plain line, placed after the last line of that block, with missing set to all their numbers (<change missing="1,3,4" type="add" after="80">). When the entry for ${u} has no Knows section yet, that change starts with the heading line "- Knows:".
 For each stale line the checker listed: a change without op that makes the line true again, with stale set to the line's number (<change stale="19" type="edit" line="19">), keeping every part of the line that still holds. Changes outside SECTIONS YOU MAY UPDATE are reviewed by hand. If the checker was wrong about the line, return nothing for it.
 Fix only what the checker found. The changes it didn't flag are kept as they are, so don't repeat them and don't add what they already add.`;
 }
@@ -1101,6 +1102,12 @@ function attrs(s) {
     return out;
 }
 
+/** "1,3, 4" → [1, 3, 4]; nothing → null. */
+function numList(v) {
+    const out = String(v ?? '').split(/[^\d]+/).filter(Boolean).map(Number).filter(Number.isFinite);
+    return out.length ? out : null;
+}
+
 function num(v) {
     const n = parseInt(String(v ?? '').replace(/[^\d]/g, ''), 10);
     return Number.isFinite(n) ? n : null;
@@ -1134,7 +1141,7 @@ export function parseOps(reply) {
         if (type === 'edit' && find === null && !textNew.trim()) type = 'remove';
         if (type === 'edit' && find !== null && !find) continue;
         if (type === 'add' && !textNew.trim()) continue;
-        ops.push({ type, line, find: type === 'edit' ? find : null, text: type === 'remove' ? '' : textNew, reason: (inner(body, 'reason') || '').trim(), ref: num(a.op), stale: num(a.stale), missing: num(a.missing) });
+        ops.push({ type, line, find: type === 'edit' ? find : null, text: type === 'remove' ? '' : textNew, reason: (inner(body, 'reason') || '').trim(), ref: num(a.op), stale: num(a.stale), missing: numList(a.missing) });
     }
     const tagged = (tag) => [...text.matchAll(new RegExp(`<${tag}\\b([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/${tag}>)`, 'gi'))]
         .map(m => ({ ref: num(attrs(m[1]).op), reason: ((m[2] && inner(m[2], 'reason')) ?? m[2] ?? '').trim() }))
@@ -1253,7 +1260,7 @@ export function resolveOps(content, ops, ranges, { dates = null } = {}) {
         for (let i = r.start + 1; i < r.end; i++) allowed.add(i);
     }
     const taken = new Map();
-    return ops.map((op0) => {
+    const resolved = ops.map((op0) => {
         const op = { ...op0, invalid: '', outside: false, moved: op0.moved || null, result: [] };
         let i = op.line - 1;
         if (i < 0 || i >= lines.length) {
@@ -1330,6 +1337,84 @@ export function resolveOps(content, ops, ranges, { dates = null } = {}) {
         if (op.type === 'edit' && op.result.join('\n') === lines[i]) op.invalid = 'It leaves the line as it is.';
         return op;
     });
+    return groupListItems(content, resolved, dates);
+}
+
+const LIST_LABELS = new Set(['knows', 'shared history']);
+const LABELLED_ITEM_RE = /^(\s*)[-*•]\s*([A-Z][A-Za-z ]{0,30}?):\s+(\S.*)$/;
+
+/**
+ * Keeps each list in a relationship entry (Knows, Shared history) under one heading line. A new line that repeats
+ * the label ("- Knows: x") becomes a plain item under the entry's block for that label, placed after its last line;
+ * when the entry has no such block yet, the first change creates the heading line and the next ones go under it.
+ */
+export function groupListItems(content, ops, dates = null) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const labels = lineLabels(content);
+    const indentOf = l => String(l ?? '').match(/^\s*/)[0];
+    const blockEnd = (i) => {
+        const base = indentOf(lines[i]).length;
+        let e = i;
+        while (e + 1 < lines.length && lines[e + 1].trim() && indentOf(lines[e + 1]).length > base) e++;
+        return e;
+    };
+    const findBlock = (entry, label) => {
+        for (let i = 0; i < lines.length; i++) {
+            if (labels[i] === entry && fieldLabel(lines[i]) === label && !headingInfo(lines[i])) return i;
+        }
+        return -1;
+    };
+    const made = new Map(); // `${entry}|${label}` -> { index, indent }
+    for (const op of ops) {
+        if (op.type !== 'add' || op.invalid || op.kind !== 'relationships' || !op.result?.length) continue;
+        const entry = op.label;
+        const out = [];
+        let moveTo = null;
+        let open = null; // a heading line inside this change: plain bullets after it are its items
+        for (const line of op.result) {
+            const m = line.match(LABELLED_ITEM_RE);
+            const label = m ? m[2].trim().toLowerCase() : '';
+            if (m && LIST_LABELS.has(label)) {
+                const at = findBlock(entry, label);
+                const key = `${entry}|${label}`;
+                if (at >= 0) {
+                    const end = blockEnd(at);
+                    moveTo = moveTo ?? end;
+                    out.push(`${indentOf(lines[at])}  - ${m[3]}`);
+                } else if (made.has(key)) {
+                    out.push(`${made.get(key).indent}  - ${m[3]}`);
+                    moveTo = moveTo ?? made.get(key).index;
+                } else {
+                    const head = `${m[1]}- ${m[2].trim()}:`;
+                    out.push(head, `${m[1]}  - ${m[3]}`);
+                    made.set(key, { index: op.index, indent: m[1] });
+                }
+                open = null;
+                continue;
+            }
+            const h = line.match(/^(\s*)[-*•]\s*([A-Z][A-Za-z ]{0,30}?):\s*$/);
+            if (h) {
+                open = h[1];
+                if (LIST_LABELS.has(h[2].trim().toLowerCase())) made.set(`${entry}|${h[2].trim().toLowerCase()}`, { index: op.index, indent: h[1] });
+                out.push(line);
+                continue;
+            }
+            if (open !== null && /^\s*[-*•]\s/.test(line) && indentOf(line).length <= open.length && !fieldLabel(line)) {
+                out.push(`${open}  ${line.trimStart()}`);
+                continue;
+            }
+            open = null;
+            out.push(line);
+        }
+        op.result = out;
+        if (moveTo !== null && moveTo !== op.index) {
+            const place = datedPlace(lines, moveTo, out[0], dates);
+            op.index = place;
+            op.line = place + 1;
+            op.oldLine = lines[place] ?? '';
+        }
+    }
+    return ops;
 }
 
 /** The card with the given changes made. Lines are found by their place in the card as it was, so order doesn't matter. */

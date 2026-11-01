@@ -130,6 +130,11 @@ The entry for your persona keeps a **Knows** list of what the character has lear
 habits, plans and what you told them about others, one short item each, with who told them when it wasn't you.
 Items are only removed when the story has made them untrue, and Tighten shortens them but never drops one.
 
+Lists in a relationship entry (Knows, Shared history) keep their label once, as a heading line, with each item under
+it as a plain indented line. When an entry has no Knows section yet, the first change creates the "- Knows:" heading.
+A new line that repeats the label ("- Knows: …") is put under the entry's block as a plain item, after its last line,
+also when the model writes it the other way. Notebook rows the check finds missing come back as one change per block.
+
 ## What it writes
 
 - Only lasting changes: relationships, where they live and work, what they now know, secrets that came out,
