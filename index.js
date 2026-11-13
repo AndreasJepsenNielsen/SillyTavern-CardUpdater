@@ -18,7 +18,7 @@ import { CARD_TEMPLATE } from './template.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.9.1'; // keep in step with manifest.json
+const VERSION = '0.9.2'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
@@ -43,7 +43,7 @@ const DEFAULTS = Object.freeze({
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
     sections: Object.fromEntries(UPDATABLE.map(([k]) => [k, true])),
     copiedFromSummaryception: false,
-    cardTemplate: '', // template for new cards; empty = the built-in v8
+    cardTemplate: '', // template for new cards; empty = the built-in v11
 });
 
 function ctx() {
@@ -1617,8 +1617,8 @@ function settingsHtml() {
         <div class="cu-muted">Uses the chat's model and sampler settings, without your preset's prompts.</div>
       </div>
       <details class="cu-template"><summary>Card template for new cards</summary>
-        <div class="cu-muted">Empty uses the built-in template (v8). Paste another template here to use it instead.</div>
-        <textarea id="cu_template" class="text_pole" rows="8" placeholder="Built-in: CHARACTER CARD TEMPLATE — v8"></textarea>
+        <div class="cu-muted">Empty uses the built-in template (v11). Paste another template here to use it instead.</div>
+        <textarea id="cu_template" class="text_pole" rows="8" placeholder="Built-in: CHARACTER CARD TEMPLATE — v11"></textarea>
       </details>
       <div class="cu-grid">
         <label for="cu_limit" title="Updates are told to keep cards under this, and the window shows each card's size against it. 5000 is the template's limit for a lead.">Card size limit (tokens, 0 = none)</label>

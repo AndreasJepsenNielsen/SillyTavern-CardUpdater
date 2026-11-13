@@ -1051,9 +1051,9 @@ test('0.9: the outline of a card is its layout without its content', () => {
 
 test('0.9: the new-card prompts: story only, tiers, own lines as samples, the template, the stamp', async () => {
     const { CARD_TEMPLATE } = await import('../template.js');
-    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v8') && CARD_TEMPLATE.includes('FINAL CHECKS') && CARD_TEMPLATE.trim().endsWith('Sample lines are speech and stay as they are.'));
+    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v11') && CARD_TEMPLATE.includes('FINAL CHECKS') && CARD_TEMPLATE.trim().endsWith('check every colour on the card follows it.'));
     const sys = U.newCardSystemPrompt('Leon', CARD_TEMPLATE);
-    for (const part of ['Never invent backstory', 'the story wins over the template\'s counts', 'Minor (at most 700 tokens)', 'Sample lines come from their own lines in the story', 'Written from the story, updated with the story up to', 'CHARACTER CARD TEMPLATE — v8', '<tier>', 'an entry for Leon']) assert.ok(sys.includes(part), part);
+    for (const part of ['Never invent backstory', 'the story wins over the template\'s counts', 'Minor (at most 700 tokens)', 'Sample lines come from their own lines in the story', 'Written from the story, updated with the story up to', 'CHARACTER CARD TEMPLATE — v11', '<tier>', 'an entry for Leon']) assert.ok(sys.includes(part), part);
     const up = U.newCardUserPrompt({ name: 'Simon Aldridge', forms: ['Simon Aldridge', 'Simon'], count: 3, firstDate: 'Day 7 - Friday 23 May', lastDate: 'Day 8 - Saturday 24 May', log: ['- Day 7: x'], lines: ['(Cornered) "I only came."'], notebook: ['[R] Simon told Leon: y.'], outline: 'CANON POINT', storyDate: 'Day 8 - Saturday 24 May', days: 'STORY DAYS: z' });
     for (const part of ['NEW CARD FOR: Simon Aldridge (also written as: Simon). Seen in 3 replies, from Day 7 - Friday 23 May to Day 8 - Saturday 24 May.', '<outline>\nCANON POINT', '<log>\n- Day 7: x', '<lines>\n(Cornered)', '<notebook>\n[R] Simon told Leon', 'STORY DAYS: z']) assert.ok(up.includes(part), part);
     const fix = U.newCardFixUserPrompt({ name: 'Simon', log: [] }, 'CARD', [{ kind: 'unsupported', text: 'a brother -> not in the story' }]);
@@ -1072,9 +1072,9 @@ test('0.9: new-card replies and check replies are read', () => {
 test('0.9: code warnings for a new card: needed sections, the entry for the player, size, dates', () => {
     const bare = 'SIMON — Minor character\n\nIDENTITY\n- Curator. Met Leon yesterday at 3 PM.';
     const w = U.newCardWarnings(bare, { tier: 'minor', personaNames: ['Leon'] });
-    for (const part of ['No CANON POINT section.', 'No PERSONALITY section.', 'No SPEECH AND VOICE section.', 'No APPEARANCE section.', 'No RELATIONSHIPS section.']) assert.ok(w.includes(part), part);
+    for (const part of ['No CANON POINT section.', 'No PERSONALITY section.', 'No SPEECH AND VOICE section.', 'No APPEARANCE section.', 'No RELATIONSHIPS section.', 'No BODY section.']) assert.ok(w.includes(part), part);
     assert.ok(w.some(x => x.startsWith('Counts from a day: yesterday')) && w.some(x => x.startsWith('Clock time: 3 PM')));
-    const full = 'SIMON — Minor character\n\nCANON POINT\nWritten from the story, updated with the story up to Day 8 - Saturday 24 May.\n\nIDENTITY\n- Curator.\n\nPERSONALITY\n1. Alone: x\n\nSPEECH AND VOICE\nSmooth.\n\nRELATIONSHIPS\nJULES\n- Wants: x\n\nAPPEARANCE\n- Grey suit.';
+    const full = 'SIMON — Minor character\n\nCANON POINT\nWritten from the story, updated with the story up to Day 8 - Saturday 24 May.\n\nIDENTITY\n- Curator.\n\nPERSONALITY\n1. Alone: x\n\nSPEECH AND VOICE\nSmooth.\n\nRELATIONSHIPS\nJULES\n- Wants: x\n\nAPPEARANCE\n- Grey suit.\n\nBODY\n- Lean, pale, grey chest hair.';
     assert.deepEqual(U.newCardWarnings(full, { tier: 'minor', personaNames: ['Leon'] }), ['No entry for Leon under RELATIONSHIPS.']);
     assert.ok(U.newCardWarnings(`${full}\n${'- word '.repeat(1200)}`, { tier: 'minor', personaNames: [] }).some(x => x.includes('over the minor limit of 700')));
 });
@@ -1129,4 +1129,120 @@ test('0.9.1: missing notebook items come back as one change per block, covering 
     assert.ok(sys.includes('All the items that go in the same block are one change') && sys.includes('that change starts with the heading line "- Knows:"'));
     assert.deepEqual(U.parseOps('<change missing="1, 3,4" type="add" after="9"><new>- Knows:\n  - x.\n  - y.</new></change>').ops[0].missing, [1, 3, 4]);
     assert.ok(U.systemPrompt('Leon').includes('create the heading line "- Knows:" the first time') && U.systemPrompt('Leon').includes('Never repeat the label on every line'));
+});
+
+// ---------------------------------------------------------------- 0.9.2: BODY, INTIMACY, body parts named plainly
+
+const ADULT_CARD = `MASHIRO — Lead
+
+CANON POINT
+Portrayed at the start of term. Nothing after this has happened.
+
+IDENTITY
+Kohinata Mashiro, 20, second-year art student.
+
+RELATIONSHIPS
+
+LEON
+- Wants: him to stay.
+- Speech: quiet, short.
+
+AIKO (roommate)
+- Wants: her approval.
+- Speech: teasing.
+
+LIMITS
+Won't be filmed. (At a limit) "No... put it away."
+
+SMALL HABITS
+- Tucks her hair behind her ear.
+
+APPEARANCE
+- Oversized sweaters.
+
+BODY
+- Slim, small breasts, pale pink nipples.
+- Bare pussy, pale lips.
+
+INTIMACY
+Likes and limits: see LIKE AND WANT and LIMITS.
+Quiet at first, louder once relaxed.`;
+
+test('0.9.2: BODY and INTIMACY are sections of their own, after RELATIONSHIPS and its entries', () => {
+    const r = U.sectionRanges(ADULT_CARD);
+    assert.deepEqual(r.map(x => x.kind), ['preamble', 'canon', 'identity', 'relationships', 'limits', 'habits', 'appearance', 'body', 'intimacy']);
+    const lines = ADULT_CARD.split('\n');
+    assert.equal(U.rangeBody(lines, r.find(x => x.kind === 'body')), '- Slim, small breasts, pale pink nipples.\n- Bare pussy, pale lips.');
+    assert.equal(U.rangeBody(lines, r.find(x => x.kind === 'intimacy')), 'Likes and limits: see LIKE AND WANT and LIMITS.\nQuiet at first, louder once relaxed.');
+    // Straight after RELATIONSHIPS they end its range instead of being read as people.
+    const direct = 'IDENTITY\nX, 25.\n\nRELATIONSHIPS\n\nLEON\n- Wants: x.\n\nAIKO\n- Wants: y.\n\nBODY\n- Tall.\n\nINTIMACY\nLoud.';
+    const d = U.sectionRanges(direct);
+    assert.deepEqual(d.map(x => x.kind), ['identity', 'relationships', 'body', 'intimacy']);
+    const rel = U.rangeBody(direct.split('\n'), d.find(x => x.kind === 'relationships'));
+    assert.ok(rel.includes('AIKO') && !rel.includes('BODY') && !rel.includes('Tall'));
+});
+
+test('0.9.2: heading kinds: BODY and INTIMACY, never BODY LANGUAGE or BODY IMAGE', async () => {
+    const P = await import('../cardparse.js');
+    for (const [h, k] of [['BODY', 'body'], ['BODY (ADULTS ONLY)', 'body'], ['INTIMACY', 'intimacy'], ['INTIMATE LIFE', 'intimacy'], ['SEX AND INTIMACY', 'intimacy'],
+        ['APPEARANCE', 'appearance'], ['LIMITS', 'limits'], ['WHAT THEY LIKE AND WANT', 'likes']]) {
+        assert.equal(P.classifyHeading(P.headingInfo(h).core), k, h);
+    }
+    for (const h of ['BODY LANGUAGE', 'BODY IMAGE', 'SOMEBODY']) assert.equal(P.classifyHeading(h), null, h);
+    assert.equal(P.SECTION_LABELS.body, 'Body');
+    assert.equal(P.SECTION_LABELS.intimacy, 'Intimacy');
+});
+
+test('0.9.2: the updater may change BODY and INTIMACY, offered after Appearance', () => {
+    const order = U.UPDATABLE.map(([k]) => k);
+    assert.deepEqual(order.slice(order.indexOf('appearance'), order.indexOf('appearance') + 3), ['appearance', 'body', 'intimacy']);
+    assert.deepEqual(U.updatableRanges(ADULT_CARD).map(r => r.kind), ['identity', 'relationships', 'appearance', 'body', 'intimacy']);
+    const sys = U.systemPrompt('Leon');
+    for (const part of [
+        '- BODY changes only for something lasting on the body: a new tattoo, a piercing, a scar. Never marks, bruises, soreness or anything that fades within days.',
+        '- INTIMACY changes when the story lastingly changes how they are in bed: a first time, experience gained, something they now like or refuse. Rewrite the line that no longer holds as a description of how they act and how their voice changes, never as a quoted line or a list of words.',
+        '- Name body parts by their plain word (breasts, nipples, pussy, lips, clit, cock, balls, ass), never a stand-in (the pink of her, her sex, down there). The roleplay model copies the card\'s wording into the story.',
+    ]) {
+        assert.ok(sys.includes(part), part.slice(0, 40));
+        assert.ok(U.sweepSystemPrompt('Leon').includes(part), `sweep: ${part.slice(0, 40)}`);
+    }
+});
+
+test('0.9.2: stand-ins for body parts are found; the same words meaning something else are not', () => {
+    for (const s of ['the pink of her showed swollen', 'the pale pink of her was wet', 'touched her sex', 'his sex hardened', 'reached down there',
+        'heat in her core', 'her center ached', 'his length', 'his member', 'his manhood', 'her womanhood', 'nether regions', 'THE PINK OF HER']) {
+        assert.equal(U.standInWords(s).length, 1, s);
+    }
+    for (const s of ['the pink of her lips', 'the pale pink of her nipples', 'her sex life', 'her sex drive', 'his sex-positive friends', 'her core values',
+        'her core group of friends', 'her center of gravity', 'his length of service', 'a member of the band', 'the Netherlands', 'pink nipples']) {
+        assert.deepEqual(U.standInWords(s), [], s);
+    }
+    assert.deepEqual(U.standInWords('The pink of her. Down there. down  there.'), ['the pink of her', 'down there']);
+});
+
+test('0.9.2: a section update with a stand-in is flagged', () => {
+    const w = U.checkUpdate('intimacy', 'Quiet.', 'Quiet. Since Day 10, the pale pink of her flushes when he looks.');
+    assert.ok(w.includes('Stand-in for a body part: the pale pink of her. Name the part plainly (breasts, nipples, pussy, lips, clit, cock, balls, ass).'));
+    assert.ok(!U.checkUpdate('body', 'Slim.', 'Slim. Pale pink nipples. A rose tattoo on her hip since Day 12.').some(x => x.startsWith('Stand-in')));
+});
+
+test('0.9.2: a new card needs BODY unless IDENTITY gives an age under 18, and names parts plainly', () => {
+    const base = (identity, extra = '') => `X — Minor\n\nCANON POINT\nWritten from the story.\n\nIDENTITY\n${identity}\n\nPERSONALITY\n1. Alone: x\n\nSPEECH AND VOICE\nSmooth.\n\nRELATIONSHIPS\nLEON\n- Wants: x\n\nAPPEARANCE\n- Grey suit.${extra}`;
+    const noBody = (id) => U.newCardWarnings(base(id), { tier: 'minor', personaNames: ['Leon'] }).includes('No BODY section.');
+    for (const id of ['- Curator.', '- 22, curator.', '- Age: 34. Curator.', '- 19-year-old student.', '- Rue Bennett, 18, student.', '- Fifties. Real estate.',
+        '- Maria Lopez, 34, has a 5-year-old daughter.', '- Nurse. Has a 6-year-old son.', '- Teacher. Her kids, ages 5 and 7.', '- Lives with her 16-year-old little sister.']) assert.ok(noBody(id), id);
+    for (const id of ['17. Lives with her mother.', '- Age: 16.', '- Aged sixteen, a junior.', '- A 15-year-old sophomore.', '- Gia Bennett, 14, Rue\'s sister.', '- 13 years old.']) assert.ok(!noBody(id), id);
+    assert.equal(U.identityAge(base('- Curator.')), null);
+    assert.equal(U.identityAge(base('- Rue Bennett, 17, recovering.')), 17);
+    const w = U.newCardWarnings(base('- 22.', '\n\nBODY\n- Slim.\n\nINTIMACY\nThe pink of her flushes. Says little down there.'), { tier: 'minor', personaNames: ['Leon'] });
+    assert.deepEqual(w, ['Stand-in for a body part: the pink of her, down there. Name the part plainly (breasts, nipples, pussy, lips, clit, cock, balls, ass).']);
+});
+
+test('0.9.2: the built-in template is v11 and the settings say so', async () => {
+    const fs = await import('node:fs');
+    const { CARD_TEMPLATE } = await import('../template.js');
+    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v11\n') && CARD_TEMPLATE.includes('\nBODY — adults only (18+)') && CARD_TEMPLATE.includes('\nINTIMACY — adults only.'));
+    const index = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    assert.ok(index.includes('empty = the built-in v11') && index.includes('Empty uses the built-in template (v11)') && index.includes('Built-in: CHARACTER CARD TEMPLATE — v11'));
+    assert.ok(!/\bv8\b/.test(index));
 });

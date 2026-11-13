@@ -46,8 +46,8 @@ the end of the model's thinking.
 1. Open the chat and click **Update cards…**.
 2. Pick the lorebook (the chat's active lorebooks by default) and tick the cards. **Select everyone in the story**
    ticks the cards whose names appear in the story.
-3. Tick the sections to update: Identity, Personality, Appearance, History, Knowledge, Secrets, Goals,
-   Relationships, Ordinary Day, Social World, Standing. The other sections (Speech and Voice, Like and Want, Fear
+3. Tick the sections to update: Identity, Personality, Appearance, Body, Intimacy, History, Knowledge, Secrets,
+   Goals, Relationships, Ordinary Day, Social World, Standing. The other sections (Speech and Voice, Like and Want, Fear
    and Resent, Small Habits, Coping, Limits) only get a change when a line in them is no longer true, and those
    changes always come unticked. Sample lines, CANON POINT (apart from its date) and the lines above the first
    section are never changed.
@@ -98,9 +98,10 @@ lorebook, most seen first. You can also type a name. Tick them and click **Draft
 For each one, Card Updater reads the whole story into their log, collects their own lines (with the state the story
 gave them) and their notebook rows, and writes a card from those only: nothing invented, sections the story gives
 nothing for left out, the tier (minor, supporting, lead) and its size chosen from how much the story has on them, and
-sample lines taken from what they actually said. It follows the card template (v8, built in; paste another one under
+sample lines taken from what they actually said. It follows the card template (v11, built in; paste another one under
 **Card template for new cards** in the settings to use that instead) and the layout of another card in the lorebook.
-The card gets a CANON POINT stamped with the current story date.
+The card gets a CANON POINT stamped with the current story date. Code warns when the new card has no BODY section
+(unless IDENTITY gives an age under 18) and when it uses a stand-in for a body part ("the pink of her", "down there").
 
 A check reads the card against the story for anything invented, wrong, missing or against the template, and sends
 it back once to be fixed. You review the card as editable text, pick the lorebook, title and keys, and **Save as a
@@ -157,6 +158,10 @@ also when the model writes it the other way. Notebook rows the check finds missi
 - Dates are the story's named days as the chat headers write them. Words that count from a day (yesterday,
   tonight, "four days clean") are flagged.
 - PERSONALITY only changes when the story shows a lasting change. Those rows are unticked by default and flagged.
+- BODY only changes for something lasting on the body (a tattoo, a piercing, a scar), never marks or soreness that
+  fade. INTIMACY changes when the story lastingly changes how they are in bed (a first time, something they now like
+  or refuse), written as how they act and how their voice changes, never as quoted lines.
+- Body parts are named by their plain word, never a stand-in: the roleplay model copies the card's wording.
 - CANON POINT gets "updated with the story up to [date]" so the card doesn't claim nothing has happened since.
 
 Warnings in yellow, about what the change itself adds (never about what the line already said). Those marked
@@ -172,7 +177,8 @@ unticked.
 - **rule:** a new line over 50 words, or a line that grows a lot;
 - a new line that is mostly the same words as another line of the card, with that line's closest sentence;
 - a line number that was off by one and was moved to the line it plainly fits, or a dated line put in date order;
-- **rule:** a Now or Wants line that reads as a chain of dates.
+- **rule:** a Now or Wants line that reads as a chain of dates;
+- a stand-in for a body part anywhere in the new section ("the pink of her", "her sex", "down there").
 
 Day labels already on the card are checked against the chat headers on every update. A label broken by 0.7.0's
 date bug ("Day 1 - Saturday 17 May0 - Monday 26 May") gets a ticked change back to "Day 10 - Monday 26 May"; a

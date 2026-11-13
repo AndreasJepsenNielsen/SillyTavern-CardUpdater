@@ -7,6 +7,8 @@ export const UPDATABLE = [
     ['identity', 'Identity'],
     ['personality', 'Personality'],
     ['appearance', 'Appearance'],
+    ['body', 'Body'],
+    ['intimacy', 'Intimacy'],
     ['history', 'History'],
     ['knowledge', 'Knowledge'],
     ['secrets', 'Secrets'],
@@ -436,6 +438,9 @@ function updateRules(u) {
 - A new fact ends an old one when both can't be true at once: moving out ends wanting to keep the place; saying someone is not the one you are waiting for ends wanting them back; breaking a rule ends keeping it. Then change or remove the old part. Never leave both, in one line or on the card.
 - When an event shows a lasting change in how they talk, cope or behave, keep the event in that person's entry, and also change the general line it contradicts (in PERSONALITY, SPEECH AND VOICE, SMALL HABITS, COPING, LIKES or FEARS) with a short clause such as "with Leon, since Day 7 - Friday 23 May, cries in front of him". A change in how they talk to someone also goes in that person's Speech line, in a few words.
 - PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. If you do change a PERSONALITY line, say in the reason which events show it.
+- BODY changes only for something lasting on the body: a new tattoo, a piercing, a scar. Never marks, bruises, soreness or anything that fades within days.
+- INTIMACY changes when the story lastingly changes how they are in bed: a first time, experience gained, something they now like or refuse. Rewrite the line that no longer holds as a description of how they act and how their voice changes, never as a quoted line or a list of words.
+- Name body parts by their plain word (breasts, nipples, pussy, lips, clit, cock, balls, ass), never a stand-in (the pink of her, her sex, down there). The roleplay model copies the card's wording into the story.
 - If the entry for ${u} says they have not met and now they have, change its lines into an entry for someone they know: Wants, Hides, a Speech line that says what they do when they talk to ${u} now (in front of whom, how close they stand, what they say first, what they do when they get nothing back), and Shared history.
 
 ${sayItOnce(u)}
@@ -871,6 +876,36 @@ export function relativeTimeWords(text) {
     return [...found];
 }
 
+// ---------------------------------------------------------------- body parts named plainly
+
+/** Words a body part after "the pink of her" can be, where the phrase names the part and is no stand-in. */
+const NAMED_PART = 'lips?|nipples?|areolae?|areolas|breasts?|tits|pussy|clit|labia|cheeks?|mouth|tongue|gums|ears?|nose|face|'
+    + 'skin|throat|neck|chest|scars?|knees?|palms?|hands?|fingers?|nails|toes|feet|thighs?|ass|eyelids?|eyes?|hair';
+
+/** Stand-ins for a body part. The words after a few of them that make the phrase mean something else are skipped. */
+const STAND_IN_RE = new RegExp([
+    String.raw`\bthe\s+(?:[a-z]+\s+){0,2}pink\s+of\s+(?:her|him)\b(?!\s+(?:own\s+)?(?:${NAMED_PART})\b)`,
+    String.raw`\b(?:her|his)\s+sex\b(?![\s-]+(?:life|lives|drive|work|worker|appeal|education|ed|toys?|tapes?|partners?|scenes?|positive|addiction|offenders?)\b)`,
+    String.raw`\bdown\s+there\b`,
+    String.raw`\bher\s+core\b(?![\s-]+(?:beliefs?|values?|fears?|wounds?|group|friends|identity|self|traits?|needs?|issues?|memor(?:y|ies)|strength|muscles|personality|desires?|of)\b)`,
+    String.raw`\bher\s+cent(?:er|re)\b(?!\s+of\b)`,
+    String.raw`\bhis\s+length\b(?!\s+of\b)`,
+    String.raw`\bhis\s+member\b(?!\s+of\b)`,
+    String.raw`\b(?:wo)?manhood\b`,
+    String.raw`\bnether\b`,
+].join('|'), 'gi');
+
+/** Stand-ins for a body part anywhere in the text, each once, lowercase. */
+export function standInWords(text) {
+    const found = new Set();
+    for (const m of String(text ?? '').matchAll(STAND_IN_RE)) found.add(m[0].toLowerCase().replace(/\s+/g, ' '));
+    return [...found];
+}
+
+function standInWarning(words) {
+    return `Stand-in for a body part: ${words.join(', ')}. Name the part plainly (breasts, nipples, pussy, lips, clit, cock, balls, ass).`;
+}
+
 /**
  * Warnings for one proposed section.
  * @returns {string[]}
@@ -898,6 +933,8 @@ export function checkUpdate(kind, oldBody, newBody) {
         return words(base ? l.replace(base, '') : l) > 70;
     });
     if (long.length) warnings.push(`${long.length} added line${long.length === 1 ? ' is' : 's are'} over 70 words: "${long[0].trim().slice(0, 60)}…"`);
+    const standIns = standInWords(newBody);
+    if (standIns.length) warnings.push(standInWarning(standIns));
     return warnings;
 }
 
@@ -1986,9 +2023,35 @@ export function parseNewCard(reply) {
 
 const TIER_LIMIT = { minor: 700, supporting: 1800, lead: 5000 };
 
+const AGE_WORDS = { ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17,
+    eighteen: 18, nineteen: 19, twenty: 20 };
+const AGE_NUM = String.raw`(\d{1,3}|${Object.keys(AGE_WORDS).join('|')})`;
+/** Someone else's age ("a 5-year-old daughter"), which is never the character's own. */
+const OTHER_PERSON = String.raw`(?!\s+(?:[a-z]+\s+)?(?:daughter|son|child|children|kid|baby|brother|sister|sibling|niece|nephew|cousin|boy|girl|stepson|stepdaughter|dog|cat)s?\b)`;
+const AGE_RES = [
+    new RegExp(String.raw`\bage(?:d)?\b[^\d\n]{0,6}?${AGE_NUM}\b`, 'i'), // Age: 17, aged 17
+    new RegExp(String.raw`^\s*(?:[-*•]\s*)?(?:[^,\n\d]{1,40},\s*)?${AGE_NUM}\s*[,.;(]`, 'im'), // Rue Bennett, 17, ... / 17. Junior ...
+    new RegExp(String.raw`\b${AGE_NUM}(?:\s*|-)(?:years?(?:\s*|-)old|yrs?\b|y\.?o\b)${OTHER_PERSON}`, 'i'), // 17 years old, 17-year-old
+];
+
+/** The age IDENTITY gives, or null when it gives none. */
+export function identityAge(card) {
+    const lines = String(card ?? '').split(/\r?\n/);
+    const r = sectionRanges(card).find(x => x.kind === 'identity');
+    if (!r) return null;
+    const text = lines.slice(r.start, r.end).join('\n');
+    for (const re of AGE_RES) {
+        const m = text.match(re);
+        if (!m) continue;
+        const v = m[1].toLowerCase();
+        return AGE_WORDS[v] ?? Number(v);
+    }
+    return null;
+}
+
 /**
- * Warnings for a new card from code: size against its tier, words counting from a day, clock times, and the
- * sections every card needs.
+ * Warnings for a new card from code: size against its tier, words counting from a day, clock times, the
+ * sections every card needs (BODY for anyone IDENTITY doesn't give as under 18), and stand-ins for body parts.
  */
 export function newCardWarnings(card, { tier = '', personaNames = [] } = {}) {
     const out = [];
@@ -2003,6 +2066,12 @@ export function newCardWarnings(card, { tier = '', personaNames = [] } = {}) {
     for (const [k, label] of [['canon', 'CANON POINT'], ['identity', 'IDENTITY'], ['personality', 'PERSONALITY'], ['speech', 'SPEECH AND VOICE'], ['appearance', 'APPEARANCE'], ['relationships', 'RELATIONSHIPS']]) {
         if (!kinds.has(k)) out.push(`No ${label} section.`);
     }
+    if (!kinds.has('body')) {
+        const age = identityAge(card);
+        if (!(age !== null && age < 18)) out.push('No BODY section.');
+    }
     if (kinds.has('relationships') && personaNames.length && !personaEntryLines(card, personaNames).size) out.push(`No entry for ${personaNames[0]} under RELATIONSHIPS.`);
+    const standIns = standInWords(card);
+    if (standIns.length) out.push(standInWarning(standIns));
     return out;
 }
