@@ -98,7 +98,7 @@ lorebook, most seen first. You can also type a name. Tick them and click **Draft
 For each one, Card Updater reads the whole story into their log, collects their own lines (with the state the story
 gave them) and their notebook rows, and writes a card from those only: nothing invented, sections the story gives
 nothing for left out, the tier (minor, supporting, lead) and its size chosen from how much the story has on them, and
-sample lines taken from what they actually said. It follows the card template (v11, built in; paste another one under
+sample lines taken from what they actually said. It follows the card template (v12, built in; paste another one under
 **Card template for new cards** in the settings to use that instead) and the layout of another card in the lorebook.
 The card gets a CANON POINT stamped with the current story date. Code warns when the new card has no BODY section
 (unless IDENTITY gives an age under 18) and when it uses a stand-in for a body part ("the pink of her", "down there").
@@ -147,9 +147,12 @@ also when the model writes it the other way. Notebook rows the check finds missi
   change, so the rest of the line stays word for word.
 - A new fact replaces the old one it ends (moving out ends "keep the apartment"; "not the one I'm waiting for" ends
   "wants her back"), rather than sitting next to it.
-- A lasting change in how the character talks, copes or behaves stays as an event in that person's entry and also
-  changes the general line, with a short clause: "with Leon, since Day 7 - Friday 23 May, cries in front of him". A
-  change in how they talk to someone goes in that entry's Speech line.
+- A lasting change in how the character talks, copes or behaves with one person goes in that person's entry. A
+  general line it contradicts gets a sentence of its own about that person ("With Leon, since Day 7 - Friday 23
+  May, she cries in front of him."), replacing any earlier words about them. Never a clause joined on with a comma
+  or a semicolon.
+- The latest word wins. Within a scene, a later order or answer replaces an earlier one, and an order given for
+  one scene ("no talking" during sex) is not stored as a standing rule unless the story makes it one.
 - Now and Wants say how things stand today, not a chain of "since Day 6 …; since Day 7 …".
 - A named person the character now has lasting dealings with gets their own entry under RELATIONSHIPS.
 - New dated lines go in date order (by day number, calendar date and time of day); a line the model put in the
@@ -206,6 +209,44 @@ writes `[check: …]` instead of guessing. The review flags those.
 Contradictions: when the story has the character saying or doing something that contradicts a line on the card,
 the update changes that line if its section is ticked, or reports it. Reports show at the top of the review under
 **Lines that may no longer be true**, to fix by hand.
+
+## How they are with you
+
+The lines that decide how a character acts with your persona are rewritten whole, in a step of their own, after
+the update: their entry for you (Now, Wants, Hides, Speech and any other field line; not the Knows and Shared
+history lists), and the lines in Identity, Personality, Speech and Voice (not sample lines) and Intimacy that name
+you. The other steps leave those lines alone.
+
+This step reads the chat itself since the card was last saved (the newest 60,000 characters of the scenes the
+character is in), not only the log. It writes each entry line as two to five plain sentences of how things stand
+at the end of the newest scene: what they do with you, how they talk to you, what they want and hide. A line in
+another section keeps every word that isn't about you, and its part about you becomes a sentence of its own.
+
+When the character points to an earlier self ("the real me", "the girl I was at seventeen"), the step describes
+that self from the card, the scenes and, for a character from a show, film or book, the source. It doesn't settle
+for the label or the few words one scene used ("the soft voice").
+
+These changes skip the check against the log, since they come from the scenes. They are not unticked just for
+being longer than a patch or for touching Speech and Voice or Personality; a line over 150 words is. Turn the step
+off with **Rewrite how they are with you from the chat**.
+
+## The final read
+
+Last, the updating model reads the whole card as it will be with the ticked changes, the new and changed lines
+marked. It fixes:
+- splices (two sentences joined by a comma, a clause about one person stuck on);
+- lines that clash with each other (the older one changes to agree);
+- leftovers from an older version;
+- a fact told twice the same way;
+- shorthand only someone who saw the scene would understand;
+- list items indented differently.
+
+A fix to a line a change wrote revises that change ("Tidied in the final read…"); a fix to a line already on the
+card is a change of its own ("From the final read of the whole card"). It adds no facts. Turn it off with **Read
+the whole card at the end**.
+
+If the model you use for updating isn't up to these two steps, set **Model for updating and tightening** to a
+bigger one (GLM 5.3 instead of GLM 5.3 Flash); reading the story keeps the cheaper model.
 
 ## The check pass and the fix
 

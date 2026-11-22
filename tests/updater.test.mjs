@@ -841,7 +841,7 @@ test('0.7: the update lists what is true now first, and the rules for ending old
     assert.deepEqual(p.now, ["- Lives in Leon's apartment since Day 9 - Sunday 25 May.", '- Tells Ellis it is over on Tuesday 27 May.']);
     assert.deepEqual(U.parseOps('<none/>').now, []);
     const sys = U.systemPrompt('Leon');
-    for (const part of ['<now>', 'what they are leaving or have left', 'moving out ends wanting to keep the place', 'with Leon, since Day 7 - Friday 23 May, cries in front of him', "that person's Speech line", 'add an entry for them at the end of RELATIONSHIPS', 'Now and Wants lines say how things stand today', 'a new line goes in date order', 'see STORY DAYS', 'reviewed by hand', 'quoted sample line']) assert.ok(sys.includes(part), part);
+    for (const part of ['<now>', 'what they are leaving or have left', 'moving out ends wanting to keep the place', 'With Leon, since Day 7 - Friday 23 May, she cries in front of him.', 'a sentence of its own about that person', 'Never join it onto another sentence', 'The latest word wins', 'add an entry for them at the end of RELATIONSHIPS', 'Now and Wants lines say how things stand today', 'a new line goes in date order', 'see STORY DAYS', 'reviewed by hand', 'quoted sample line']) assert.ok(sys.includes(part), part);
     const up = U.userPrompt({ card: 'C', title: 'Jules', sections: ['GOALS (lines 1-2)'], log: ['- a'], days: 'STORY DAYS (write dates in this form): Day 9 - Sunday 25 May' });
     assert.ok(up.includes('STORY DAYS (write dates in this form): Day 9 - Sunday 25 May') && up.includes('Return only the <now> block'));
     assert.match(U.sizeNote(7800, 5000), /Still put every lasting fact on it/);
@@ -852,7 +852,7 @@ test('0.7: the update lists what is true now first, and the rules for ending old
 
 test('0.7: the pass for lines no longer true gets the card, what is true now, the log and the planned changes', () => {
     const sys = U.sweepSystemPrompt('Leon');
-    for (const part of ['line by line, from the first section to the last', 'SPEECH AND VOICE, LIKES, FEARS, COPING, SMALL HABITS, LIMITS', 'fears of losing something they have already chosen to give up', 'with Leon, since Day 7 - Friday 23 May, …', 'Skip lines a planned change already fixes', 'SAY IT ONCE', '<change type="edit" line="57">']) assert.ok(sys.includes(part), part);
+    for (const part of ['line by line, from the first section to the last', 'SPEECH AND VOICE, LIKES, FEARS, COPING, SMALL HABITS, LIMITS', 'fears of losing something they have already chosen to give up', 'With Leon, since Day 7 - Friday 23 May, she …', 'never a clause joined on with a comma or a semicolon', 'Skip lines a planned change already fixes', 'SAY IT ONCE', '<change type="edit" line="57">']) assert.ok(sys.includes(part), part);
     const ops = U.resolveOps(DAY9, [{ id: 1, type: 'edit', line: 7, find: 'alone in Ellis\'s penthouse', text: 'with Leon in his apartment' }], U.updatableRanges(DAY9));
     const up = U.sweepUserPrompt({ card: U.numberCard(DAY9), title: 'Jules', sections: ['IDENTITY (lines 6-7)'], now: ['- Lives with Leon.'], log: ['- Day 9: moved in.'], ops, days: 'STORY DAYS: x' });
     assert.ok(up.includes('<now>\n- Lives with Leon.\n</now>') && up.includes('#1 CHANGE line 7 (IDENTITY)') && up.includes('SECTIONS THE PLAYER TICKED: IDENTITY (lines 6-7). Changes in other sections are fine') && up.includes('STORY DAYS: x'));
@@ -1051,9 +1051,9 @@ test('0.9: the outline of a card is its layout without its content', () => {
 
 test('0.9: the new-card prompts: story only, tiers, own lines as samples, the template, the stamp', async () => {
     const { CARD_TEMPLATE } = await import('../template.js');
-    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v11') && CARD_TEMPLATE.includes('FINAL CHECKS') && CARD_TEMPLATE.trim().endsWith('check every colour on the card follows it.'));
+    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v12') && CARD_TEMPLATE.includes('FINAL CHECKS') && CARD_TEMPLATE.trim().endsWith('says nothing their entry contradicts.'));
     const sys = U.newCardSystemPrompt('Leon', CARD_TEMPLATE);
-    for (const part of ['Never invent backstory', 'the story wins over the template\'s counts', 'Minor (at most 700 tokens)', 'Sample lines come from their own lines in the story', 'Written from the story, updated with the story up to', 'CHARACTER CARD TEMPLATE — v11', '<tier>', 'an entry for Leon']) assert.ok(sys.includes(part), part);
+    for (const part of ['Never invent backstory', 'the story wins over the template\'s counts', 'Minor (at most 700 tokens)', 'Sample lines come from their own lines in the story', 'Written from the story, updated with the story up to', 'CHARACTER CARD TEMPLATE — v12', '<tier>', 'an entry for Leon']) assert.ok(sys.includes(part), part);
     const up = U.newCardUserPrompt({ name: 'Simon Aldridge', forms: ['Simon Aldridge', 'Simon'], count: 3, firstDate: 'Day 7 - Friday 23 May', lastDate: 'Day 8 - Saturday 24 May', log: ['- Day 7: x'], lines: ['(Cornered) "I only came."'], notebook: ['[R] Simon told Leon: y.'], outline: 'CANON POINT', storyDate: 'Day 8 - Saturday 24 May', days: 'STORY DAYS: z' });
     for (const part of ['NEW CARD FOR: Simon Aldridge (also written as: Simon). Seen in 3 replies, from Day 7 - Friday 23 May to Day 8 - Saturday 24 May.', '<outline>\nCANON POINT', '<log>\n- Day 7: x', '<lines>\n(Cornered)', '<notebook>\n[R] Simon told Leon', 'STORY DAYS: z']) assert.ok(up.includes(part), part);
     const fix = U.newCardFixUserPrompt({ name: 'Simon', log: [] }, 'CARD', [{ kind: 'unsupported', text: 'a brother -> not in the story' }]);
@@ -1238,11 +1238,149 @@ test('0.9.2: a new card needs BODY unless IDENTITY gives an age under 18, and na
     assert.deepEqual(w, ['Stand-in for a body part: the pink of her, down there. Name the part plainly (breasts, nipples, pussy, lips, clit, cock, balls, ass).']);
 });
 
-test('0.9.2: the built-in template is v11 and the settings say so', async () => {
+test('0.10: the built-in template is v12 and the settings say so', async () => {
     const fs = await import('node:fs');
     const { CARD_TEMPLATE } = await import('../template.js');
-    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v11\n') && CARD_TEMPLATE.includes('\nBODY — adults only (18+)') && CARD_TEMPLATE.includes('\nINTIMACY — adults only.'));
+    assert.ok(CARD_TEMPLATE.startsWith('CHARACTER CARD TEMPLATE — v12\n') && CARD_TEMPLATE.includes('\nBODY — adults only (18+)') && CARD_TEMPLATE.includes('\nINTIMACY — adults only.'));
+    for (const part of ['\nSplices. A line about something else', 'rewritten whole, from how the newest scene ended', 'never only a label such as "the soft voice"', '\n32. Read the Now, Wants, Hides and Speech lines', '\n33. Search every section outside RELATIONSHIPS']) assert.ok(CARD_TEMPLATE.includes(part), part);
     const index = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
-    assert.ok(index.includes('empty = the built-in v11') && index.includes('Empty uses the built-in template (v11)') && index.includes('Built-in: CHARACTER CARD TEMPLATE — v11'));
+    assert.ok(index.includes('empty = the built-in v12') && index.includes('Empty uses the built-in template (v12)') && index.includes('Built-in: CHARACTER CARD TEMPLATE — v12'));
     assert.ok(!/\bv8\b/.test(index));
+});
+
+// ---------------------------------------------------------------- 0.10: how they are with the player character, the final read
+
+const WITH_LEON = `JULES VAUGHN — Lead character
+
+CANON POINT
+Portrayed after the slap, updated with the story up to Day 9 - Sunday 25 May.
+
+IDENTITY
+- Paid mistress of Ellis.
+
+PERSONALITY
+1. Alone: paints for hours.
+2. With her closest person: Leon, since Day 9 - Sunday 25 May. With Ellis she is light and agreeable.
+
+SPEECH AND VOICE
+Cool, low and unhurried; on the back foot she promises; with Leon, since Day 9 - Sunday 25 May, the soft voice instead.
+Sample lines:
+1. (To Leon, dry) "And yet you showed up here."
+
+RELATIONSHIPS
+
+ELLIS
+- Wants: to keep him.
+
+LEON KENNEDY
+- Has seen: he moved in on Tuesday 13 May.
+- Now: her lover across the hall; the when hers. Since Day 9 he sets the terms.
+- Wants: to be picked out loud by him, once.
+- Speech: soft and asking; she speaks only when he asks.
+- Knows:
+ - he is from Fontana.
+ - Bree: he sent her a photo.
+- Shared history:
+ - Day 2 - Sunday 18 May: their first night.
+
+INTIMACY
+- With Leon he leads: silent on his order.`;
+
+test('0.10: the lines that say how she is with the player character: the entry\'s fields and the general lines naming him', () => {
+    const t = U.portraitTargets(WITH_LEON, ['Leon', 'Leon Kennedy']);
+    assert.equal(t.entry, 'LEON KENNEDY');
+    const at = s => WITH_LEON.split('\n').findIndex(l => l.startsWith(s));
+    assert.deepEqual(t.fields.map(f => f.index), [at('- Now:'), at('- Wants: to be picked'), at('- Speech: soft')]);
+    assert.deepEqual(t.general.map(g => g.index), [at('2. With her closest person'), at('Cool, low and unhurried'), at('- With Leon he leads')]);
+    assert.ok(!t.general.some(g => g.text.includes('And yet you showed up')), 'sample lines stay');
+    assert.ok(!t.fields.some(f => /Bree|Fontana|Has seen|Knows|Shared history/.test(f.text)), 'lists and first impressions stay');
+    assert.deepEqual(U.portraitTargets(WITH_LEON, []), { entry: '', fields: [], general: [] });
+});
+
+test('0.10: the scenes are the chat itself, from the last save, newest kept', () => {
+    const chat = [
+        { is_user: true, mes: 'old' },
+        { name: 'Narrator', mes: '[Jules] (Calm): "Before the save."' },
+        { is_user: true, mes: 'I say "Be her."' },
+        { name: 'Narrator', mes: 'Jules laughs. <internal_states>## Physics\n- Jules: here</internal_states>' },
+        { name: 'Narrator', mes: 'Somewhere else, Ellis drives.' },
+        { is_user: true, mes: 'I say "Tell me about the ocean."' },
+        { name: 'Narrator', mes: 'Jules talks about the ocean at her grandmother\'s for a long time.' },
+    ];
+    const s = U.sceneText(chat, ['Jules'], { from: 2, userName: 'Leon' });
+    assert.ok(s.text.startsWith('[#2] Leon: I say "Be her."') && s.text.includes('[#3] Narrator: Jules laughs.') && s.text.includes('[#6] Narrator: Jules talks about the ocean'));
+    assert.ok(!s.text.includes('Before the save') && !s.text.includes('Ellis drives') && !s.text.includes('internal_states'));
+    const short = U.sceneText(chat, ['Jules'], { from: 2, userName: 'Leon', maxChars: 120 });
+    assert.ok(short.cut && short.text.includes('the ocean') && !short.text.includes('Be her'));
+});
+
+test('0.10: the rewrite prompt reads the scenes to the end and describes the earlier self, not the label', () => {
+    const sys = U.portraitSystemPrompt('Leon');
+    for (const part of ['The latest word wins', 'is not a standing rule unless the speaker says it is', 'find that self in the card', 'Never write only the label', 'is a pointer, not the description', 'two to five plain sentences', 'a sentence of its own, never a clause joined onto another sentence', 'Only lines listed under THE LINES TO REWRITE', '<none/>']) assert.ok(sys.includes(part), part);
+    const targets = U.portraitTargets(WITH_LEON, ['Leon']);
+    const up = U.portraitUserPrompt({ card: U.numberCard(WITH_LEON), title: 'Jules', entry: targets.entry, targets, scenes: '[#5] Narrator: x', cut: true, log: ['- Day 9: y'], days: 'STORY DAYS: z' });
+    assert.ok(up.includes(`THE LINES TO REWRITE (the entry is LEON KENNEDY):\nline ${WITH_LEON.split('\n').findIndex(l => l.startsWith('2. With her'))+1} (PERSONALITY): 2. With her closest person`) && up.includes('older scenes left out for length') && up.includes('<scenes>\n[#5] Narrator: x\n</scenes>') && up.includes('STORY DAYS: z'));
+    // The other steps leave those lines to it, and the log keeps the last word of a scene.
+    assert.ok(U.systemPrompt('Leon', { portrait: true }).includes('LINES THAT ANOTHER STEP WRITES') && !U.systemPrompt('Leon').includes('LINES THAT ANOTHER STEP WRITES'));
+    assert.ok(U.sweepSystemPrompt('Leon', { portrait: true }).includes('LINES THAT ANOTHER STEP WRITES') && U.fixSystemPrompt('Leon', { portrait: true }).includes('LINES THAT ANOTHER STEP WRITES'));
+    const log = U.logSystemPrompt('Jules', 'Leon');
+    assert.ok(log.includes('The latest word wins') && log.includes('A "Lasting" line holds only what still holds at the end of this part') && log.includes('not only the label'));
+    for (const p of [U.systemPrompt('Leon'), U.sweepSystemPrompt('Leon'), U.tightenSystemPrompt('Leon')]) assert.ok(!p.includes('short clause such as'), 'no spliced clauses');
+});
+
+test('0.10: a rewritten line may be a few sentences, and the rewrite and the final read may touch Speech and Personality', () => {
+    const ranges = U.updatableRanges(WITH_LEON);
+    const lines = WITH_LEON.split('\n');
+    const speech = lines.findIndex(l => l.startsWith('Cool, low'));
+    const now = lines.findIndex(l => l.startsWith('- Now:'));
+    const long = `- Now: ${'She talks all the time with him and laughs at his jokes. '.repeat(9).trim()}`;
+    const [a, b] = U.resolveOps(WITH_LEON, [
+        { id: 1, type: 'edit', line: now + 1, find: null, text: long, source: 'portrait' },
+        { id: 2, type: 'edit', line: speech + 1, find: null, text: 'Cool, low and unhurried; on the back foot she promises. With Leon, since Day 9 - Sunday 25 May, she talks fast and all the time.', source: 'portrait' },
+    ], ranges);
+    const wa = U.opWarnings(a, { personaNames: ['Leon'] });
+    assert.ok(!wa.untick, wa.warnings.join(' | '));
+    const wb = U.opWarnings(b, { personaNames: ['Leon'] });
+    assert.ok(b.outside && !wb.untick && wb.warnings.some(w => w.includes("isn't one of the sections you ticked")));
+    const tooLong = U.resolveOps(WITH_LEON, [{ id: 3, type: 'edit', line: now + 1, find: null, text: `- Now: ${'word '.repeat(160)}`, source: 'portrait' }], ranges)[0];
+    assert.ok(U.opWarnings(tooLong, { personaNames: ['Leon'] }).untick);
+    const plain = U.resolveOps(WITH_LEON, [{ id: 4, type: 'edit', line: now + 1, find: null, text: long }], ranges)[0];
+    assert.ok(U.opWarnings(plain, { personaNames: ['Leon'] }).untick, 'the update step itself still keeps lines short');
+});
+
+test('0.10: the final read sees the card as it will be and its fixes land on the right change', () => {
+    const ranges = U.updatableRanges(WITH_LEON);
+    const lines = WITH_LEON.split('\n');
+    const now = lines.findIndex(l => l.startsWith('- Now:'));
+    const wants = lines.findIndex(l => l.startsWith('- Wants: to be picked'));
+    const fontana = lines.findIndex(l => l.includes('he is from Fontana'));
+    let ops = U.resolveOps(WITH_LEON, [
+        { id: 1, type: 'edit', line: now + 1, find: null, text: '- Now: her lover; she talks all the time with him, she speaks only when he asks.', source: 'portrait' },
+        { id: 2, type: 'add', line: fontana + 1, text: ' - he boxes.', source: 'update' },
+    ], ranges);
+    const after = U.cardAfter(WITH_LEON, ops);
+    assert.equal(after.text, U.applyOps(WITH_LEON, ops));
+    const numbered = U.numberAfter(after, ops);
+    const nowAt = after.text.split('\n').findIndex(l => l.startsWith('- Now:'));
+    const boxAt = after.text.split('\n').findIndex(l => l.includes('he boxes'));
+    const speechAt = after.text.split('\n').findIndex(l => l.startsWith('- Speech: soft'));
+    assert.ok(numbered.includes(`${nowAt + 1}| [changed] - Now:`) && numbered.includes(`${boxAt + 1}| [new]  - he boxes.`) && numbered.includes(`${speechAt + 1}| - Speech: soft`));
+    const found = U.parseOps([
+        `<change type="edit" line="${nowAt + 1}"><new>- Now: her lover; she talks all the time with him.</new><reason>clashed with itself</reason></change>`,
+        `<change type="edit" line="${speechAt + 1}"><new>- Speech: fast and bright, all the time.</new><reason>clashes with Now</reason></change>`,
+        `<change type="remove" line="${boxAt + 1}"><reason>not on the card elsewhere; cut</reason></change>`,
+        `<change type="edit" line="${wants + 1}"><new>- Wants: x</new><reason>a line number that is out of the card after the changes</reason></change>`,
+    ].join('\n')).ops;
+    const fx = U.applyCoherence(WITH_LEON, ops, after.origin, found, ranges);
+    const byId = new Map(fx.ops.map(o => [o.id, o]));
+    assert.equal(byId.get(1).result[0], '- Now: her lover; she talks all the time with him.');
+    assert.ok(byId.get(1).coherence && byId.get(1).coherence.before.includes('speaks only when he asks'));
+    assert.ok(fx.dropped.some(o => o.id === 2) && !byId.has(2));
+    const fresh = fx.ops.find(o => o.source === 'coherence' && o.result?.[0] === '- Speech: fast and bright, all the time.');
+    assert.ok(fresh && !fresh.invalid && fresh.index === lines.findIndex(l => l.startsWith('- Speech: soft')));
+    assert.equal(fx.revised, 2);
+    ops = fx.ops;
+    const final = U.applyOps(WITH_LEON, ops);
+    assert.ok(final.includes('- Speech: fast and bright') && !final.includes('he boxes') && !final.includes('speaks only when he asks.\n- Wants'));
+    assert.ok(U.coherenceSystemPrompt('Leon').includes('A splice') && U.coherenceSystemPrompt('Leon').includes('Add no facts'));
 });

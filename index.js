@@ -13,16 +13,19 @@ import {
     storyDates, storyDaysNote, editableRanges, sweepSystemPrompt, sweepUserPrompt, personaEntryLines, dayLabelOps, notebookLines,
     canonOp, uncardedPeople, spokenLines, cardOutline, newCardSystemPrompt, newCardUserPrompt, newCardCheckSystemPrompt,
     newCardCheckUserPrompt, parseCardCheck, newCardFixUserPrompt, parseNewCard, newCardWarnings,
+    portraitTargets, sceneText, portraitSystemPrompt, portraitUserPrompt, cardAfter, numberAfter, coherenceSystemPrompt,
+    coherenceUserPrompt, applyCoherence,
 } from './updater.js';
 import { CARD_TEMPLATE } from './template.js';
 import { send, testConnection, summaryceptionConnection, ModelError, ThinkingRequiredError } from './connection.js';
 
 const MODULE = 'cardUpdater';
-const VERSION = '0.9.2'; // keep in step with manifest.json
+const VERSION = '0.10.0'; // keep in step with manifest.json
 const LOG = '[Card Updater]';
 const MAX_VERSIONS = 5;
 const CHUNK_CHARS = 24000; // about 6k tokens of story per log request
 const PARALLEL = 3; // log requests sent at the same time
+const SCENE_CHARS = 60000; // about 16k tokens of chat for rewriting how a character is with the player
 
 const DEFAULTS = Object.freeze({
     source: 'openai', // 'openai' (direct endpoint) | 'profile' | 'chat'
@@ -38,12 +41,14 @@ const DEFAULTS = Object.freeze({
     checkDrafts: true,
     fixDrafts: true, // send what the check finds back for fixing
     sweepDrafts: true, // one pass over every line for what is no longer true
+    portraitDrafts: true, // rewrite how the character is with the player character, whole, from the scenes
+    coherenceDrafts: true, // a last read of the whole card as it will be, for splices and clashes
     cardLimit: 5000, // tokens; the template's limit for a lead
     profileId: '',
     firstRunMessages: 0, // without a Summaryception summary, the first run reads the last N messages (0 = all)
     sections: Object.fromEntries(UPDATABLE.map(([k]) => [k, true])),
     copiedFromSummaryception: false,
-    cardTemplate: '', // template for new cards; empty = the built-in v11
+    cardTemplate: '', // template for new cards; empty = the built-in v12
 });
 
 function ctx() {
@@ -567,6 +572,10 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
 
     // Step 2: the model lists changes to single lines of the numbered card.
     const dates = storyDates(c.chat);
+    const personaNames = nameVariants(c.name1 || '');
+    const targets = portraitTargets(content, personaNames);
+    const targetIdx = new Set([...targets.fields, ...targets.general].map(x => x.index));
+    const portraitOn = !!s.portraitDrafts && targetIdx.size > 0;
     const job = {
         card, content, ranges, dates,
         days: storyDaysNote(dates),
@@ -583,7 +592,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
     status.text(`${card.title} (${counter}): updating the card from ${job.log.length} log lines…`);
     let reply;
     try {
-        reply = await sendWithRetry(s, systemPrompt(c.name1), userPrompt({
+        reply = await sendWithRetry(s, systemPrompt(c.name1, { portrait: portraitOn }), userPrompt({
             card: job.numbered, title: card.title, sections: job.sections, log: job.log,
             trackers: job.trackers, storyDate: job.storyDate, tokens: job.tokens, limit: job.limit, days: job.days, notebook: job.notebook,
         }), {
@@ -607,7 +616,7 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
     if (s.sweepDrafts && (ops.length || parsed.now.length)) {
         status.text(`${card.title} (${counter}): looking for lines that are no longer true…`);
         try {
-            const sweepReply = await sendWithRetry(s, sweepSystemPrompt(c.name1), sweepUserPrompt({
+            const sweepReply = await sendWithRetry(s, sweepSystemPrompt(c.name1, { portrait: portraitOn }), sweepUserPrompt({
                 card: job.numbered, title: card.title, sections: job.sections, now: parsed.now, log: job.log,
                 trackers: job.trackers, storyDate: job.storyDate, ops: ops.filter(o => !o.invalid),
                 tokens: job.tokens, limit: job.limit, days: job.days, notebook: job.notebook,
@@ -633,6 +642,46 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
         }
     }
 
+    // Step 2c: the lines that say how they are with the player character, rewritten whole from the scenes themselves.
+    let portrait = { ran: false };
+    let yielded = [];
+    if (portraitOn) {
+        status.text(`${card.title} (${counter}): rewriting how ${card.title} is with ${c.name1 || 'the player'}…`);
+        const lastSaved = versionStore()[plan.key]?.[0]?.message;
+        const scenes = sceneText(c.chat, card.names, { from: Number.isInteger(lastSaved) ? lastSaved : 0, userName: c.name1, maxChars: SCENE_CHARS });
+        try {
+            const portraitReply = await sendWithRetry(s, portraitSystemPrompt(c.name1), portraitUserPrompt({
+                card: job.numbered, title: card.title, entry: targets.entry, targets, scenes: scenes.text, cut: scenes.cut, log: job.log,
+                ops: ops.filter(o => !o.invalid && (o.type === 'add' || !targetIdx.has(o.index))), storyDate: job.storyDate, days: job.days, notebook: job.notebook,
+            }), {
+                signal,
+                reasoning: s.updateThinking,
+                model: s.updateModel,
+                onProgress: progress(`rewriting how ${card.title} is with ${c.name1 || 'the player'}`),
+                onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
+            });
+            raws.push(['Reply for how they are with the player character', portraitReply]);
+            const found = parseOps(portraitReply).ops.filter(o => targetIdx.has(o.line - 1) && o.type !== 'add');
+            // The other steps' changes to these lines give way to the rewrite.
+            yielded = ops.filter(o => !o.invalid && o.type !== 'add' && targetIdx.has(o.index))
+                .map(o => ({ ...o, dropped: 'Gave way to the rewrite of how they are with the player character.' }));
+            const first = Math.max(0, ...ops.map(o => o.id));
+            ops = resolveOps(content, [
+                ...ops.filter(o => o.invalid || o.type === 'add' || !targetIdx.has(o.index)),
+                ...found.map((o, k) => ({ ...o, id: first + k + 1, source: 'portrait' })),
+            ], ranges, { dates });
+            portrait = { ran: true, changes: found.length, scenes: scenes.count, cut: scenes.cut };
+            job.portraitLines = targetIdx;
+        } catch (err) {
+            if (signal?.aborted) {
+                block.html(`${cardHead(card, elapsed())}<div class="cu-warn">Cancelled.</div>`);
+                return;
+            }
+            console.error(LOG, err);
+            portrait = { ran: true, failed: err?.message || String(err) };
+        }
+    }
+
     // Day labels already on the card that are broken or disagree with the chat headers.
     const changed = new Set(ops.filter(o => !o.invalid && o.type !== 'add').map(o => o.index));
     const labelFixes = dayLabelOps(content, dates, editableRanges(content)).filter(o => !changed.has(o.line - 1));
@@ -651,6 +700,40 @@ async function runCard(card, kinds, rebuild, s, block, status, signal, counter, 
     }
     result.raws.unshift(...raws);
     result.sweep = sweep;
+    result.portrait = portrait;
+    result.dropped.push(...yielded);
+
+    // Step 4: the whole card as it will read, for splices, clashes and leftovers the line-by-line steps can't see.
+    result.coherence = { ran: false };
+    if (s.coherenceDrafts && result.ops.some(o => !o.invalid && o.kind !== 'canon')) {
+        status.text(`${card.title} (${counter}): reading the whole card as it will be…`);
+        try {
+            // Only the changes that come ticked: a change the check flagged shouldn't bend other lines to agree with it.
+            const likely = result.ops.filter(o => !o.invalid && !o.found?.length && !opWarnings(o, { personaNames, dates }).untick);
+            const after = cardAfter(content, likely);
+            const coherenceReply = await sendWithRetry(s, coherenceSystemPrompt(c.name1), coherenceUserPrompt({
+                card: numberAfter(after, likely), title: card.title, storyDate: job.storyDate, days: job.days,
+            }), {
+                signal,
+                reasoning: s.updateThinking,
+                model: s.updateModel,
+                onProgress: progress('reading the whole card as it will be'),
+                onRetry: () => status.text(`${card.title} (${counter}): the model got stuck, trying once more…`),
+            });
+            result.raws.push(['Reply for the final read of the card', coherenceReply]);
+            const fx = applyCoherence(content, result.ops, after.origin, parseOps(coherenceReply).ops, ranges, { dates });
+            result.ops = fx.ops;
+            result.dropped.push(...fx.dropped);
+            result.coherence = { ran: true, revised: fx.revised, added: fx.added };
+        } catch (err) {
+            if (signal?.aborted) {
+                block.html(`${cardHead(card, elapsed())}<div class="cu-warn">Cancelled.</div>`);
+                return;
+            }
+            console.error(LOG, err);
+            result.coherence = { ran: true, failed: err?.message || String(err) };
+        }
+    }
     renderOpsReview(job, result, parsed, block, { took: elapsed, logInfo: { key: plan.key, appliedTo: log.lines.length, newLines }, edited });
 }
 
@@ -662,7 +745,8 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     const c = ctx();
     const title = job.card.title;
     const out = { ops: firstOps, dropped: [], stale: [], missing: [], missingLeft: [], general: [], check: { ran: false }, fix: { ran: false }, recheck: { ran: false }, conflicts: [], raws: [] };
-    const live = firstOps.filter(op => !op.invalid && op.source !== 'dates');
+    // The rewrite of how they are with the player character comes from the scenes, not the log, so the log check skips it.
+    const live = firstOps.filter(op => !op.invalid && op.source !== 'dates' && op.source !== 'portrait');
     if (!s.checkDrafts || (!live.length && !job.notebook.length)) return out;
     const say = what => status?.text(`${title} (${counter}): ${what}… ${elapsed()}`);
 
@@ -694,7 +778,8 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     for (const r of job.ranges) for (let i = r.start + 1; i < r.end; i++) allowed.add(i);
     const editable = new Set();
     for (const r of editableRanges(job.content)) for (let i = r.start + 1; i < r.end; i++) editable.add(i);
-    const touched = new Set(live.filter(o => o.type !== 'add').map(o => o.index));
+    const touched = new Set(firstOps.filter(o => !o.invalid && o.type !== 'add').map(o => o.index));
+    for (const i of job.portraitLines || []) touched.add(i);
     const staleSeen = new Set();
     out.stale = found.stale
         .filter(x => x.line >= 1 && x.line <= lines.length && lines[x.line - 1].trim() && !touched.has(x.line - 1) && !staleSeen.has(x.line) && staleSeen.add(x.line))
@@ -718,7 +803,7 @@ async function checkAndFix(job, firstOps, { s, status, counter, signal, elapsed,
     say(`fixing ${[flagged.length ? `${flagged.length} change${flagged.length === 1 ? '' : 's'}` : '', fixable.length ? `${fixable.length} stale line${fixable.length === 1 ? '' : 's'}` : '', out.missing.length ? `${out.missing.length} missing notebook line${out.missing.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')}`);
     let fixReply;
     try {
-        fixReply = await sendWithRetry(s, fixSystemPrompt(c.name1), fixUserPrompt({
+        fixReply = await sendWithRetry(s, fixSystemPrompt(c.name1, { portrait: !!job.portraitLines }), fixUserPrompt({
             card: job.numbered, title, sections: job.sections, log: job.log, trackers: job.trackers, storyDate: job.storyDate,
             ops: [...live, ...broken].sort((a, b) => a.id - b.id),
             problems: flagged.flatMap(op => [...(op.found || []).map(f => ({ id: op.id, ...f })), ...(op.codeProblems || []).map(t => ({ id: op.id, kind: 'rule', text: t }))]),
@@ -930,7 +1015,15 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
     const sweepLine = !sw.ran ? ''
         : sw.failed ? `<div class="cu-warn">The pass for lines that are no longer true failed (${esc(sw.failed)}), so look over the card yourself.</div>`
             : `<div class="cu-muted">Lines no longer true: ${sw.changes ? `${sw.changes} change${sw.changes === 1 ? '' : 's'} found.` : 'none found.'}</div>`;
-    const head = cardHead(card, tookText()) + editedNote(edited) + sweepLine + checkLine + missingHtml + outdatedHtml;
+    const pt = result.portrait || { ran: false };
+    const portraitLine = !pt.ran ? ''
+        : pt.failed ? `<div class="cu-warn">Rewriting how ${esc(card.title)} is with ${esc(ctx().name1 || 'the player character')} failed (${esc(pt.failed)}), so the other steps' changes to those lines were kept.</div>`
+            : `<div class="cu-muted">How ${esc(card.title)} is with ${esc(ctx().name1 || 'the player character')}: ${pt.changes ? `${pt.changes} line${pt.changes === 1 ? '' : 's'} rewritten` : 'still right'}, from ${pt.scenes} message${pt.scenes === 1 ? '' : 's'} of the chat${pt.cut ? ' (the newest; older ones left out for length)' : ''}.</div>`;
+    const co = result.coherence || { ran: false };
+    const coherenceLine = !co.ran ? ''
+        : co.failed ? `<div class="cu-warn">The final read of the card failed (${esc(co.failed)}), so read the card over for lines that clash.</div>`
+            : `<div class="cu-muted">Final read of the card: ${co.revised || co.added ? [co.revised ? `${co.revised} change${co.revised === 1 ? '' : 's'} tidied` : '', co.added ? `${co.added} more line${co.added === 1 ? '' : 's'} fixed` : ''].filter(Boolean).join(', ') : 'holds together'}.</div>`;
+    const head = cardHead(card, tookText()) + editedNote(edited) + sweepLine + portraitLine + coherenceLine + checkLine + missingHtml + outdatedHtml;
     const real = items.filter(it => it.op.kind !== 'canon');
 
     const markDone = async () => {
@@ -978,6 +1071,9 @@ function renderOpsReview(job, result, parsed, block, { took, logInfo, edited }) 
             if (op.source === 'sweep') notes.push('Found by the pass for lines that are no longer true.');
             if (op.source === 'dates') notes.push('Day label checked against the chat headers.');
             if (op.source === 'missing') notes.push('Added after the check found a notebook line the card didn\'t hold.');
+            if (op.source === 'portrait') notes.push(`Rewritten whole from the scenes: how ${card.title} is with ${ctx().name1 || 'the player character'} now.`);
+            if (op.source === 'coherence') notes.push('From the final read of the whole card.');
+            if (op.coherence) notes.push(`Tidied in the final read of the card${op.coherence.reason ? `: ${op.coherence.reason}` : '.'}`);
             html += `<div class="cu-item${op.invalid ? ' cu-invalid' : ''}">
                 <label class="checkbox_label"><input type="checkbox" data-accept="${i}"${it.accept ? ' checked' : ''}${op.invalid ? ' disabled' : ''}><b>${esc(opHead(op))}</b></label>
                 ${op.reason ? `<div class="cu-muted">${esc(op.reason)}</div>` : ''}
@@ -1602,6 +1698,8 @@ function settingsHtml() {
         <label class="checkbox_label"><input type="checkbox" id="cu_check"><span>Check each draft (one more request per card)</span></label>
         <label class="checkbox_label" title="After the update, the updating model goes through every line of the card against what is true now and writes a change for each line that no longer is. Changes in sections you didn't tick come unticked."><input type="checkbox" id="cu_sweep"><span>Look for lines that are no longer true (one more request per card)</span></label>
         <label class="checkbox_label" title="Changes the check flags, and lines it finds no longer true, go back to the updating model once, and the fixes are checked again."><input type="checkbox" id="cu_fix"><span>Fix what the check finds (up to two more requests)</span></label>
+        <label class="checkbox_label" title="The lines that say how the character is with your persona (their entry's Now, Wants, Hides and Speech, and the lines in Identity, Personality, Speech and Intimacy that name you) are rewritten whole from the chat itself, as a description, instead of patched clause by clause."><input type="checkbox" id="cu_portrait"><span>Rewrite how they are with you from the chat (one more request per card)</span></label>
+        <label class="checkbox_label" title="The updating model reads the whole card as it will be after the changes and fixes splices, lines that clash, leftovers and repeats."><input type="checkbox" id="cu_coherence"><span>Read the whole card at the end (one more request per card)</span></label>
         <div class="cu-row cu-buttons">
           <div id="cu_copy_sc" class="menu_button">Copy from Summaryception</div>
           <div id="cu_test" class="menu_button">Test connection</div>
@@ -1617,8 +1715,8 @@ function settingsHtml() {
         <div class="cu-muted">Uses the chat's model and sampler settings, without your preset's prompts.</div>
       </div>
       <details class="cu-template"><summary>Card template for new cards</summary>
-        <div class="cu-muted">Empty uses the built-in template (v11). Paste another template here to use it instead.</div>
-        <textarea id="cu_template" class="text_pole" rows="8" placeholder="Built-in: CHARACTER CARD TEMPLATE — v11"></textarea>
+        <div class="cu-muted">Empty uses the built-in template (v12). Paste another template here to use it instead.</div>
+        <textarea id="cu_template" class="text_pole" rows="8" placeholder="Built-in: CHARACTER CARD TEMPLATE — v12"></textarea>
       </details>
       <div class="cu-grid">
         <label for="cu_limit" title="Updates are told to keep cards under this, and the window shows each card's size against it. 5000 is the template's limit for a lead.">Card size limit (tokens, 0 = none)</label>
@@ -1676,6 +1774,8 @@ function bindSettings() {
     $('#cu_check').prop('checked', !!s.checkDrafts).on('change', function () { s.checkDrafts = !!this.checked; save(); });
     $('#cu_fix').prop('checked', !!s.fixDrafts).on('change', function () { s.fixDrafts = !!this.checked; save(); });
     $('#cu_sweep').prop('checked', !!s.sweepDrafts).on('change', function () { s.sweepDrafts = !!this.checked; save(); });
+    $('#cu_portrait').prop('checked', !!s.portraitDrafts).on('change', function () { s.portraitDrafts = !!this.checked; save(); });
+    $('#cu_coherence').prop('checked', !!s.coherenceDrafts).on('change', function () { s.coherenceDrafts = !!this.checked; save(); });
     $('#cu_temp').val(s.temperature).on('input', function () { const v = parseFloat(this.value); s.temperature = Number.isFinite(v) ? v : 0.5; save(); });
     $('#cu_limit').val(s.cardLimit).on('input', function () { s.cardLimit = Math.max(0, parseInt(this.value, 10) || 0); save(); });
     $('#cu_template').val(s.cardTemplate || '').on('input', function () { s.cardTemplate = this.value; save(); });

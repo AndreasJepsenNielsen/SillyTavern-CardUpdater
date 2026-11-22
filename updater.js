@@ -335,6 +335,9 @@ Plain words, events not interpretation. Keep each line short.
 - Name who did or said what exactly as the story says. If the story doesn't make clear who did something, write "unclear who" rather than guessing a name.
 - Keep who did what to whom exactly as the story has it, and name the act as the story describes it. Never turn one act into another (touching into sex, a kiss into more), and never merge two people's acts into one.
 - When the story contradicts itself (a slip in who did something, an object in two places at once), keep what the rest of the scene supports, or write "unclear".
+- The latest word wins. Within one scene, a later order, promise, answer or change of mind replaces an earlier one on the same matter: read the scene to its end and log how it ended, saying it replaced the earlier one. An order or rule given for one moment or one scene (no talking during sex, eyes on the road) is not a lasting change unless the speaker says it is (always, every time, whenever we're together, from now on).
+- A "Lasting" line holds only what still holds at the end of this part.
+- When ${name} points to an earlier self ("the real me", "who I used to be", "the girl I was with her"), log what they said about that self in their own words, not only the label.
 If nothing in this part involves ${name}, reply with exactly: NONE`;
 }
 
@@ -406,7 +409,8 @@ The roleplay model reads the whole card on every turn, so every line costs on ev
 - Write like the rest of the card: flat facts. No literary turns, no lines that land, no summing up, no clothes, rooms, weather or other colour.
 - Only events where this character acted, or that changed what they do, want or know from now on. Leave out what happened to the people around them (someone's car, someone else's news) unless it changed something for this character. A scene that changed nothing for them gets no line.
 - Shared history in a RELATIONSHIPS entry holds only the few events that matter most between the two (about five), each its own short dated line. One day gets at most two new lines. Each keeps the moment, the words said and what changed between them, in one or two sentences of about 40 words at most, and cuts the rest, even when older lines are longer.
-- When a new fact replaces an old one, change the old line instead of adding a new one.`;
+- When a new fact replaces an old one, change the old line instead of adding a new one.
+- The exception: the Now, Wants, Hides and Speech lines of the entry for the player character describe how things stand with them in a few plain sentences. Shorten those, but never down to a label.`;
 
 /** "CARD SIZE" line for the prompts. */
 export function sizeNote(tokens, limit, { tighten = false } = {}) {
@@ -428,15 +432,19 @@ export function storyDaysNote(dates) {
 }
 
 /** The rules for writing changes, shared by the update step and the fix step. */
-function updateRules(u) {
-    return `WHAT TO CHANGE
+function updateRules(u, { portrait = false } = {}) {
+    return `${portrait ? `${portraitNote(u)}
+
+` : ''}WHAT TO CHANGE
 - Only what will still be true weeks of story time from now: who they are with and on what terms, where they live and work, what they now know, secrets that came out, goals reached or dropped, people who came into or left their life, lasting changes to how they look.
 - Never write a passing state into the card: mood, where they are right now, what they are doing that day, injuries that heal within days, plans for the day. The game tracks those itself.
 - Never write how ${u} looks or what they wear or carry (jewellery, clothes, marks, their body). Those are for ${u} to decide, and the story may have made them up. Keep the act and leave out the detail.
 - Use only facts the log or the card states. Add no causes, reasons, motives, feelings or details the log doesn't give (why someone came, what they had just finished, that something was unannounced). Check every fact you write against the rest of the card too: if the card says something happened before, don't write that it never did.
 - Read every line of the card against the log, not only the lines about the newest events. A line the log shows is no longer true gets changed wherever it is: a trait the character has now acted against for good, a "has none" or "never" the story has ended, a rule that was broken, a relationship that changed, a goal finished or dropped, a belief the story disproved, wanting to keep something they are leaving, a fear of losing what they have already given up.
 - A new fact ends an old one when both can't be true at once: moving out ends wanting to keep the place; saying someone is not the one you are waiting for ends wanting them back; breaking a rule ends keeping it. Then change or remove the old part. Never leave both, in one line or on the card.
-- When an event shows a lasting change in how they talk, cope or behave, keep the event in that person's entry, and also change the general line it contradicts (in PERSONALITY, SPEECH AND VOICE, SMALL HABITS, COPING, LIKES or FEARS) with a short clause such as "with Leon, since Day 7 - Friday 23 May, cries in front of him". A change in how they talk to someone also goes in that person's Speech line, in a few words.
+- The latest word wins. Within one scene a later order, promise or answer replaces an earlier one on the same matter, and an order or rule given for one moment or one scene (no talking during sex, eyes on the road) is not a lasting rule unless the speaker says it is (always, every time, from now on) or later scenes keep it up. A log line marked Lasting can be wrong about this: check it against the log lines after it from the same scene.
+- When an event shows a lasting change in how they talk, cope or behave with one person, it goes in that person's entry: its Now and Speech lines say how they are with that person now. A general line (in PERSONALITY, SPEECH AND VOICE, SMALL HABITS, COPING, LIKES or FEARS) that it contradicts gets a sentence of its own about that person ("With Leon, since Day 7 - Friday 23 May, she cries in front of him."), replacing any earlier words about them in that line. Never join it onto another sentence with a comma or a semicolon. When the change is with everyone, change the general line itself.
+- When the character points to an earlier self ("the real me", "who I used to be", "the girl I was with her"), write what that self is like (how they talked, what they did, what made them happy) from the card and the story, never only the label or the few words a scene used about it.
 - PERSONALITY changes only when the log shows a lasting change over many scenes and days, not after one event. Events change mood, closeness and choices, not who someone is. If you do change a PERSONALITY line, say in the reason which events show it.
 - BODY changes only for something lasting on the body: a new tattoo, a piercing, a scar. Never marks, bruises, soreness or anything that fades within days.
 - INTIMACY changes when the story lastingly changes how they are in bed: a first time, experience gained, something they now like or refuse. Rewrite the line that no longer holds as a description of how they act and how their voice changes, never as a quoted line or a list of words.
@@ -493,13 +501,13 @@ const CHANGE_FORMAT = `<change type="edit" line="57">
 <reason>which log line shows it is no longer true, or which line already says it</reason>
 </change>`;
 
-export function systemPrompt(userName) {
+export function systemPrompt(userName, { portrait = false } = {}) {
     const u = userName || 'the player character';
     return `You update one character card for a long-running roleplay so it matches what has happened in the story. The roleplay model reads this card on every turn and treats it as the truth about the character. You get the card with numbered lines and a dated log of what happened to the character since the card was last updated. The log already holds only what the character did, saw or was told.
 
 You don't rewrite the card. You return a short list of changes to single lines. Every line you don't name stays exactly as it is.
 
-${updateRules(u)}
+${updateRules(u, { portrait })}
 
 WHAT TO RETURN
 First, what is true now, as of the newest date in the log: short lines of everything lasting that the card doesn't say yet or says differently. Where they live and with whom; who they are with and on what terms; what they are leaving or have left; rules or promises broken; goals reached, started or dropped; beliefs the story disproved; secrets now out; people who came into their life and terms agreed with them; what they learned about ${u} or told ${u} (every NOTEBOOK line); how others now see them; how they now talk, cope or behave differently, and with whom.
@@ -545,11 +553,11 @@ export function userPrompt({ card, title, sections, log, trackers, storyDate, to
 
 // ---------------------------------------------------------------- fixing what the check found
 
-export function fixSystemPrompt(userName) {
+export function fixSystemPrompt(userName, { portrait = false } = {}) {
     const u = userName || 'the player character';
     return `You proposed changes to one character card for a long-running roleplay. A checker compared them with the log and with the card and found problems. Fix them. The roleplay model reads this card on every turn and treats it as the truth about the character. Line numbers always refer to the card as it is now, before any change.
 
-${updateRules(u)}
+${updateRules(u, { portrait })}
 
 WHAT TO RETURN
 For each change the checker flagged, return one of these:
@@ -671,7 +679,7 @@ ${CHECKS}
 
 HOW TO TIGHTEN
 - Remove a [new] line when the card already states the same fact somewhere else; leave a few words pointing to it only where the reader would otherwise miss it.
-- The entry for ${u} under RELATIONSHIPS is written in play, so all of it is marked [new]. Its Shared history keeps only the turning points: at most eight dated lines, each one or two sentences, cutting day-by-day detail. Its Now and Wants lines say how things stand today, without a chain of dates ("since Day 6 …; since Day 7 …"). Its Knows list keeps every item that is still true: shorten items, never drop one, since the game keeps no other record of what was told.
+- The entry for ${u} under RELATIONSHIPS is written in play, so all of it is marked [new]. Its Shared history keeps only the turning points: at most eight dated lines, each one or two sentences, cutting day-by-day detail. Its Now, Wants, Hides and Speech lines say how things stand today, without a chain of dates ("since Day 6 …; since Day 7 …"); they may be a few plain sentences of description, so shorten them but never down to a label. Its Knows list keeps every item that is still true: shorten items, never drop one, since the game keeps no other record of what was told.
 - Write dates in full, as listed under STORY DAYS.
 - Shorten [new] lines to one plain sentence. Keep dates and who was there.
 - Merge [new] lines that say the same thing.
@@ -940,7 +948,7 @@ export function checkUpdate(kind, oldBody, newBody) {
 
 // ---------------------------------------------------------------- lines that are no longer true
 
-export function sweepSystemPrompt(userName) {
+export function sweepSystemPrompt(userName, { portrait = false } = {}) {
     const u = userName || 'the player character';
     return `You find the lines of a character card that are no longer true, and write the change for each. The roleplay model reads this card on every turn as the truth about the character, so a line that is no longer true makes it play the character as they were, not as they are.
 
@@ -954,9 +962,9 @@ You get the card with numbered lines, WHAT IS TRUE NOW (as of the newest date), 
 - habits, and ways of talking, coping or behaving, that have changed for good.
 A new fact ends an old one when both can't be true at once: moving out ends wanting to keep the place; saying someone is not the one you are waiting for ends wanting them back; breaking a rule ends keeping it.
 
-For each line that is no longer true, write the change that makes it true again, keeping every part of the line that still holds. When it is true with one person only, add a short clause to the general line ("with ${u}, since Day 7 - Friday 23 May, …") rather than rewriting the trait. Skip lines a planned change already fixes. Don't add events; that is the planned changes' job. Never change CANON POINT, the lines above the first section, or a quoted sample line.
+For each line that is no longer true, write the change that makes it true again, keeping every part of the line that still holds. When it is no longer true with one person only, that person's entry says how they are with them now, and the general line gets a sentence of its own about them ("With ${u}, since Day 7 - Friday 23 May, she …."), replacing any earlier words about them in that line; never a clause joined on with a comma or a semicolon. Skip lines a planned change already fixes. Don't add events; that is the planned changes' job. Never change CANON POINT, the lines above the first section, or a quoted sample line.
 
-${updateRules(u)}
+${updateRules(u, { portrait })}
 
 WHAT TO RETURN
 One block per line that is no longer true, in this form:
@@ -978,6 +986,304 @@ export function sweepUserPrompt({ card, title, sections, now, log, trackers, sto
     parts.push(`CHANGES ALREADY PLANNED:\n${ops.length ? ops.map(describeOp).join('\n\n') : '(none)'}`);
     parts.push(`Go through every line of the card for ${title} and return a <change> for each line that is no longer true, or <none/>.`);
     return parts.join('\n\n');
+}
+
+// ---------------------------------------------------------------- how they are with the player character, rewritten whole
+
+/** What the update, sweep and fix steps are told when the rewrite step runs after them. */
+function portraitNote(u) {
+    return `LINES THAT ANOTHER STEP WRITES
+The field lines of the entry for ${u} (Now, Wants, Hides, Speech and the like, not the Knows and Shared history lists), and the lines in IDENTITY, PERSONALITY, SPEECH AND VOICE and INTIMACY that name ${u}, are rewritten whole from the scenes in a step of their own. Don't change those lines. Put new events in Shared history, what was learned in Knows, and everything else where it belongs.`;
+}
+
+/** Field labels in a relationship entry that hold a list or a first impression, not how things stand. */
+const PORTRAIT_SKIP = new Set(['knows', 'shared history', 'has seen', 'doesn\'t know', 'does not know']);
+/** Sections whose lines that name the player character are rewritten with the entry. */
+const PORTRAIT_KINDS = new Set(['identity', 'personality', 'speech', 'intimacy']);
+
+/**
+ * The lines that say how the character is with the player character now: the field lines of the entry for them
+ * (Now, Wants, Hides, Speech and the like, at the entry's own indent; not the Knows and Shared history lists), and
+ * the lines in IDENTITY, PERSONALITY, SPEECH AND VOICE (not sample lines) and INTIMACY that name them.
+ * @returns {{entry: string, fields: {index: number, label: string, text: string}[], general: {index: number, label: string, text: string}[]}}
+ */
+export function portraitTargets(content, personaNames) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const names = (personaNames || []).filter(Boolean);
+    const out = { entry: '', fields: [], general: [] };
+    if (!names.length) return out;
+    const labels = lineLabels(content);
+    const own = [...personaEntryLines(content, names)].sort((a, b) => a - b);
+    if (own.length) {
+        out.entry = labels[own[0]].split(' / ').slice(1).join(' / ');
+        const indent = Math.min(...own.map(i => lines[i].match(/^\s*/)[0].length));
+        for (const i of own) {
+            if (lines[i].match(/^\s*/)[0].length !== indent) continue;
+            const lab = fieldLabel(lines[i]);
+            if (!lab || PORTRAIT_SKIP.has(lab) || /:\s*$/.test(lines[i])) continue;
+            out.fields.push({ index: i, label: labels[i], text: lines[i] });
+        }
+    }
+    for (const r of sectionRanges(content)) {
+        if (!PORTRAIT_KINDS.has(r.kind) || r.inline) continue;
+        for (let i = r.start + 1; i < r.end; i++) {
+            const l = lines[i];
+            if (!l.trim() || headingInfo(l)) continue;
+            if (r.kind === 'speech' && SAMPLE_LINE_RE.test(l)) continue;
+            if (mentionsAny(l, names)) out.general.push({ index: i, label: labels[i], text: l });
+        }
+    }
+    return out;
+}
+
+/**
+ * The chat itself from message `from` on: the replies that involve the character and the player's messages around
+ * them, oldest first, keeping the newest when it runs over maxChars. The rewrite step reads the scenes, not the log.
+ * @returns {{text: string, count: number, cut: boolean}}
+ */
+export function sceneText(chat, names, { from = 0, userName = 'User', maxChars = 60000 } = {}) {
+    const msgs = Array.isArray(chat) ? chat : [];
+    const items = [];
+    for (let i = Math.max(0, from || 0); i < msgs.length; i++) {
+        const m = msgs[i];
+        if (!m || (m.is_system && !m?.extra?.sc_ghosted)) continue;
+        const text = tagless(cleanProse(m.mes));
+        if (!text) continue;
+        const who = m.is_user ? userName : (m.name || 'Narrator');
+        items.push({ kind: 'message', from: i, to: i, text: `[#${i}] ${who}: ${text}`, isUser: !!m.is_user, presence: physicsText(stateBlock(m.mes)) });
+    }
+    const kept = filterForCharacter(items, names);
+    const out = [];
+    let size = 0;
+    for (let k = kept.length - 1; k >= 0; k--) {
+        const t = kept[k].text;
+        if (out.length && size + t.length > maxChars) break;
+        out.unshift(t);
+        size += t.length + 2;
+    }
+    return { text: out.join('\n\n'), count: out.length, cut: out.length < kept.length };
+}
+
+export function portraitSystemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You rewrite the lines of one character card that say how the character is with ${u} now. The roleplay model reads this card on every turn and plays the character from it, so these lines decide how the character acts and talks with ${u}. Updates usually get them wrong in one of two ways: a new clause glued onto an old sentence until the line says two things at once, or a flat summary of the few words one scene used. Write them the way someone who watched every scene would describe the character to the person who has to play them next.
+
+WHAT YOU GET
+- The card, with numbered lines.
+- THE LINES TO REWRITE: the field lines of the character's entry for ${u} (Now, Wants, Hides, Speech and any others), and the lines in IDENTITY, PERSONALITY, SPEECH AND VOICE and INTIMACY that name ${u}.
+- THE SCENES: the chat itself since the card was last updated, oldest first. This is your main source.
+- The log of what happened (a summary of the same scenes; where they disagree, the scenes win), and the changes other steps plan for the rest of the card.
+
+READ THE SCENES TO THE END
+- The latest word wins. Within a scene, a later order, promise, answer or change of mind replaces an earlier one on the same matter. Read every scene to its end before you decide what holds.
+- An order or rule given for one moment or one scene (no talking during sex, eyes on the road in a car) is not a standing rule unless the speaker says it is (always, every time, whenever we're together, from now on) or later scenes keep it up.
+- What you write is how things stand at the end of the newest scene.
+
+SAY WHO THEY ARE, NOT WHICH WORDS WERE USED
+- When the character points to a self or a time their story already knows ("the real me", "who I was before", "the girl I used to be", "how I was with her"), find that self in the card (HISTORY, PERSONALITY, INNER LIFE, SECRETS, the other entries) and in the scenes, and write what that self is like: how they talked and how much, what they did, what they dreamed about, what made them happy, how they were with the person they loved. For a character from a known show, film or book, that self as the source plainly shows it counts too. Never write only the label ("her real self", "the real girl") and never only repeat the few words a scene used about it.
+- A word the scene used for a voice or a manner ("soft", "quiet", "the real one") is a pointer, not the description. Describe the voice: how fast, how much they talk, what about, whether they laugh, joke, tease, ask or tell, what their hands do.
+- Describe what will show in an ordinary scene with ${u}: what they do when he comes in, what they talk about, how they touch him, what they do when he is funny, cruel or quiet.
+
+THE ENTRY'S FIELD LINES
+- Each is a description of how things stand now, in two to five plain sentences. Now: where they stand with ${u} and what the character does with him now. Wants: what they want from him now. Hides: what they hide from him now (drop anything he has since been told). Speech: how they talk to him now (the voice, how much, who leads, in front of other people). Any other field keeps its own job.
+- Rewrite the whole line. Keep what still holds from the old line, drop what has ended, and leave out what happened when (that is Shared history's job). A date only where a change began ("since Day 9 - Sunday 25 May"), never a chain of dates.
+- Keep the line's bullet and label exactly as they are.
+
+A LINE IN ANOTHER SECTION
+- Change only its part about ${u}. That part is a sentence of its own, never a clause joined onto another sentence with a comma or a semicolon, and it replaces any earlier words about ${u} in that line. Every other word of the line stays exactly as written.
+- SPEECH AND VOICE: when they talk differently to ${u} than to everyone else, the paragraph keeps one sentence of its own describing that voice (see above).
+- PERSONALITY, IDENTITY and INTIMACY: a sentence on ${u} only where the section needs it; otherwise a short pointer ("how she is with him is in his entry").
+- A line that is right as it is: leave it out of your reply.
+
+ALWAYS
+- Facts only from the scenes, the log, the card and, for a canon character's earlier self, the source. No motives or feelings nobody shows.
+- Plain words in the card's own flat style: no literary turns, no lines that land. Body parts by their plain word.
+- Nothing about how ${u} looks, or what he wears or carries.
+- Dates in full, the way the chat headers write them (STORY DAYS). Never words that count from a day (today, tonight, yesterday, last night, tomorrow, this week, ago).
+- A word or phrase the character keeps saying is named once, in the SPEECH AND VOICE paragraph, and nowhere else.
+- No quoted lines in INTIMACY: describe how the voice changes.
+
+WHAT TO RETURN
+One block per line you change, numbered as in the card:
+<change type="edit" line="186">
+<new>the whole line as it should read, with its bullet and label</new>
+<reason>which scenes or log lines it comes from, and which earlier self it describes, if any</reason>
+</change>
+A line that should go: <change type="remove" line="186"><reason>why</reason></change>
+Only lines listed under THE LINES TO REWRITE. If every one of them is right as it is, return only <none/>.`;
+}
+
+export function portraitUserPrompt({ card, title, entry = '', targets, scenes = '', cut = false, log = [], ops = [], storyDate = '', days = '', notebook = [] }) {
+    const parts = [];
+    parts.push(`CHARACTER CARD: ${title} (each line starts with its number)\n<card>\n${card}\n</card>`);
+    const list = [...(targets?.fields || []), ...(targets?.general || [])].sort((a, b) => a.index - b.index);
+    parts.push(`THE LINES TO REWRITE${entry ? ` (the entry is ${entry})` : ''}:\n${list.map(x => `line ${x.index + 1} (${x.label}): ${x.text.trim()}`).join('\n')}`);
+    parts.push(`THE SCENES SINCE THE CARD WAS LAST UPDATED (oldest first${cut ? '; older scenes left out for length' : ''}):\n<scenes>\n${scenes || '(none in the chat; use the log)'}\n</scenes>`);
+    parts.push(`THE LOG OF THE SAME SCENES (oldest first):\n<log>\n${(log || []).join('\n')}\n</log>`);
+    if (notebook.length) parts.push(notebookBlock(title, notebook, { must: false }));
+    if (ops.length) parts.push(`CHANGES OTHER STEPS PLAN FOR THE REST OF THE CARD:\n${ops.map(describeOp).join('\n\n')}`);
+    if (storyDate) parts.push(`CURRENT STORY DATE: ${storyDate}`);
+    if (days) parts.push(days);
+    parts.push(`Rewrite the lines that no longer say how ${title} is with them now. Return only <change> blocks, or <none/>.`);
+    return parts.join('\n\n');
+}
+
+// ---------------------------------------------------------------- the final read of the whole card
+
+/**
+ * The card as it reads with the changes made (the same lines applyOps gives), and where each line comes from:
+ * {orig: index in the card} or {op: change id, k: line of its result}.
+ * @returns {{text: string, origin: object[]}}
+ */
+export function cardAfter(content, ops) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const replace = new Map();
+    const after = new Map();
+    for (const op of ops) {
+        if (op.invalid || op.dropped || !Number.isInteger(op.index)) continue;
+        if (op.type === 'add') {
+            if (!after.has(op.index)) after.set(op.index, []);
+            after.get(op.index).push(op);
+        } else if (!replace.has(op.index)) replace.set(op.index, op);
+    }
+    const text = [];
+    const origin = [];
+    lines.forEach((l, i) => {
+        const r = replace.get(i);
+        if (r) {
+            if (r.type !== 'remove') r.result.forEach((x, k) => { text.push(x); origin.push({ op: r.id, k }); });
+        } else {
+            text.push(l);
+            origin.push({ orig: i });
+        }
+        for (const a of after.get(i) || []) a.result.forEach((x, k) => { text.push(x); origin.push({ op: a.id, k }); });
+    });
+    return { text: text.join('\n'), origin };
+}
+
+/** The card after the changes, numbered, with [changed] and [new] on the lines the changes wrote. */
+export function numberAfter(after, ops) {
+    const byId = new Map(ops.map(o => [o.id, o]));
+    return after.text.split('\n').map((l, n) => {
+        const o = after.origin[n];
+        const op = o && 'op' in o ? byId.get(o.op) : null;
+        const mark = op && l.trim() ? (op.type === 'add' ? '[new] ' : '[changed] ') : '';
+        return l || mark ? `${n + 1}| ${mark}${l}` : `${n + 1}|`;
+    }).join('\n');
+}
+
+export function coherenceSystemPrompt(userName) {
+    const u = userName || 'the player character';
+    return `You read a character card the way the roleplay model will read it after an update, and fix what doesn't hold together. The model reads the whole card on every turn and plays the character from it, so a line that contradicts another, or reads as two sentences glued together, makes it play the character wrong.
+
+Lines marked [changed] or [new] were just written by the update; the rest were already on the card.
+
+FIND
+- A splice: a line that joins two sentences with a comma or a semicolon, or a clause about one person stuck onto a sentence about something else ("on the back foot she promises; with ${u}, since Day 9, the soft voice instead"). Make each its own sentence. A part about one person that their relationship entry already says can go, leaving a short pointer only where the section needs it.
+- A clash: two lines that can't both be true (one says she speaks only when he asks, another that she talks all the time; one says she hides the money from him, another that he knows). The [changed] and [new] lines hold the newest facts: change the older line to agree, or cut the part of it that no longer holds.
+- Leftovers: a line that still describes the character with someone as they were before, after that person's entry says it changed; words left over from an older version (a trailing name, half a sentence, a clause that no longer fits the line).
+- The same fact told the same way on two lines: keep it in its home (anything about one person in that person's entry) and cut it elsewhere.
+- Shorthand only someone who saw the scene would understand ("the kitchen, the fraud chair and the drawer"): write out what it refers to, if the card says it somewhere; otherwise leave it.
+- Items of one list indented differently from each other: make them match the first item.
+
+CHANGE AS LITTLE AS YOU CAN
+- Every word that is right stays. Fix the line, don't rewrite the section.
+- Add no facts. Everything you write must already be on the card.
+- Never change CANON POINT, the lines above the first section, or a quoted sample line in SPEECH AND VOICE.
+- Plain, flat words like the rest of the card; dates in full; no words that count from a day.
+
+WHAT TO RETURN
+One block per line you fix, numbered as in the card you were given:
+<change type="edit" line="34">
+<new>the whole line as it should read</new>
+<reason>what was wrong, and which line it clashed with</reason>
+</change>
+<change type="remove" line="34"><reason>what was wrong</reason></change>
+If the card holds together, return only <none/>.`;
+}
+
+export function coherenceUserPrompt({ card, title, storyDate = '', days = '' }) {
+    return [
+        `CHARACTER CARD AS IT WILL READ: ${title} (each line starts with its number; [changed] and [new] mark what the update wrote)\n<card>\n${card}\n</card>`,
+        ...(storyDate ? [`CURRENT STORY DATE: ${storyDate}`] : []),
+        ...(days ? [days] : []),
+        'Read the whole card and fix what does not hold together. Return only <change> blocks, or <none/>.',
+    ].join('\n\n');
+}
+
+/**
+ * Puts the final read's fixes on the list of changes. A fix to a line a change wrote changes that change; a fix to
+ * a line already on the card becomes a change of its own (source 'coherence').
+ * @param {object[]} ops the resolved changes
+ * @param {object[]} origin from cardAfter
+ * @param {object[]} found from parseOps on the final read's reply (line numbers of the card after the changes)
+ * @returns {{ops: object[], dropped: object[], revised: number, added: number}}
+ */
+export function applyCoherence(content, ops, origin, found, ranges, { dates = null } = {}) {
+    const lines = String(content ?? '').split(/\r?\n/);
+    const byId = new Map(ops.map(o => [o.id, o]));
+    const edits = new Map(); // op id -> { result: (string|null)[], reasons: string[] }
+    const fresh = [];
+    const seen = new Set();
+    let nextId = Math.max(0, ...ops.map(o => o.id)) + 1;
+    for (const f of found) {
+        const o = origin[f.line - 1];
+        if (!o || seen.has(f.line)) continue;
+        seen.add(f.line);
+        if ('orig' in o) {
+            if (!lines[o.orig]?.trim()) continue;
+            fresh.push({ type: f.type === 'add' ? 'edit' : f.type, line: o.orig + 1, find: f.type === 'edit' ? f.find : null, text: f.type === 'remove' ? '' : f.text, reason: f.reason, id: nextId++, source: 'coherence' });
+            continue;
+        }
+        const op = byId.get(o.op);
+        if (!op || !Array.isArray(op.result) || o.k >= op.result.length) continue;
+        if (!edits.has(op.id)) edits.set(op.id, { result: op.result.slice(), reasons: [] });
+        const e = edits.get(op.id);
+        const cur = op.result[o.k];
+        if (f.type === 'remove') e.result[o.k] = null;
+        else if (f.type === 'edit' && f.find !== null && f.find !== undefined) {
+            const at = findLoose(cur, f.find);
+            if (!at) continue;
+            e.result[o.k] = tidyLine(cur.slice(0, at.start) + f.text + cur.slice(at.end));
+        } else {
+            const repl = fitIndent(String(f.text).split('\n'), cur);
+            e.result[o.k] = repl.join('\n');
+        }
+        if (f.reason) e.reasons.push(f.reason);
+    }
+    const dropped = [];
+    let revised = 0;
+    for (const [id, e] of edits) {
+        const op = byId.get(id);
+        const before = op.result.join('\n');
+        const next = e.result.filter(x => x !== null).flatMap(x => String(x).split('\n'));
+        if (next.join('\n') === before) continue;
+        op.coherence = { before, reason: e.reasons.join(' ') };
+        revised++;
+        if (!next.some(x => x.trim())) {
+            if (op.type === 'add') {
+                op.dropped = `The final read of the card cut it: ${e.reasons.join(' ')}`;
+                dropped.push(op);
+                continue;
+            }
+            op.type = 'remove';
+            op.result = [];
+            op.text = '';
+            op.find = null;
+            continue;
+        }
+        op.result = next;
+        op.text = next.join('\n');
+        op.find = null;
+        if (op.type === 'edit' && next.join('\n') === lines[op.index]) op.invalid = 'It leaves the line as it is.';
+    }
+    const kept = ops.filter(o => !o.dropped);
+    const taken = new Set(kept.filter(o => !o.invalid && o.type !== 'add').map(o => o.index));
+    const placed = resolveOps(content, fresh, ranges, { dates }).map((op) => {
+        if (!op.invalid && op.type !== 'add' && taken.has(op.index)) return { ...op, invalid: `Another change already changes line ${op.line}.` };
+        return op;
+    });
+    return { ops: [...kept, ...placed.filter(op => op.invalid !== 'It leaves the line as it is.')], dropped, revised, added: placed.filter(op => !op.invalid).length };
 }
 
 // ---------------------------------------------------------------- story days
@@ -1727,13 +2033,15 @@ export function opWarnings(op, { personaNames = [], dates = null } = {}) {
         }
         return { warnings, problems, untick };
     }
+    // The rewrite of how they are with the player character and the final read touch these lines by design.
+    const byDesign = op.source === 'portrait' || op.source === 'coherence';
     if (op.outside) {
         warnings.push(`${String(op.label || 'This section').split(' / ')[0]} isn't one of the sections you ticked: check before accepting.`);
-        untick = true;
+        if (!byDesign) untick = true;
     }
     if (op.kind === 'personality' && op.type !== 'remove') {
-        warnings.push('Personality change: check the reason before accepting.');
-        untick = true;
+        warnings.push(byDesign ? 'Personality line: check the change before accepting.' : 'Personality change: check the reason before accepting.');
+        if (!byDesign) untick = true;
     }
     if (op.type === 'remove') return { warnings, problems, untick };
     const newText = op.result.join('\n');
@@ -1767,7 +2075,9 @@ export function opWarnings(op, { personaNames = [], dates = null } = {}) {
     const nw = words(newText);
     const ow = words(oldText);
     if (op.type === 'add' && nw > 50 && !headingInfo(op.result.find(l => l.trim()) || '')) problem(`The new line is ${nw} words long.`);
-    if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) problem(`The line grows from ${ow} to ${nw} words.`);
+    if (op.source === 'portrait') {
+        if (nw > 150) problem(`The line is ${nw} words long; two to five sentences is enough.`);
+    } else if (op.type === 'edit' && ((nw > 70 && ow <= 70) || nw - ow > 40)) problem(`The line grows from ${ow} to ${nw} words.`);
     return { warnings, problems, untick: untick || problems.length > 0 };
 }
 
